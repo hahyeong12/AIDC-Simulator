@@ -76,15 +76,30 @@ class SimulatorApp:
         if store and self.playthrough_id is not None:
             self.db.add_log(self.playthrough_id, text)
 
+
     def update_status(self) -> None:
         s = self.state
-        phase_name = {"ready": "요청 대기", "incident": "장애 대응", "finished": "처리 완료"}[s.phase]
+        phase_name = {
+            "ready": "요청 대기",
+            "incident": "장애 대응",
+            "finished": "처리 완료"
+        }[s.phase]
+    
         score = "-" if s.score is None else str(s.score)
+    
+        # 현재 남아 있는 자원 계산
+        gpu_remaining = GPU_TOTAL - s.gpu_used
+        power_remaining = POWER_TOTAL - s.power_used
+    
         self.status_var.set(
-            f"상태: {phase_name}    |    GPU: {s.gpu_used}/{GPU_TOTAL} 사용    |    "
+            f"상태: {phase_name}    |    "
+            f"GPU: {s.gpu_used}/{GPU_TOTAL} 사용    |    "
             f"전력: {s.power_used}/{POWER_TOTAL} 사용    |    "
-            f"네트워크: 필요 {s.network_needed} / 가용 {s.network_available}    |    점수: {score}"
+            f"네트워크: 필요 {s.network_needed} / 가용 {s.network_available}    |    "
+            f"점수: {score}\n"
+            f"잔여 자원: GPU {gpu_remaining}개    |    전력 {power_remaining}단위"
         )
+
 
     def render_actions(self) -> None:
         for widget in self.action_frame.winfo_children():
