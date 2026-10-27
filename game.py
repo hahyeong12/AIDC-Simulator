@@ -16,10 +16,53 @@ RESPONSES = {
     "ignore": {"label": "기존 설정 유지", "penalty": 25},
 }
 
+@dataclass
+class DataCenter:
+    gpu_total: int = GPU_TOTAL
+    power_total: int = POWER_TOTAL
+
+    gpu_used: int = 0
+    # 현재 사용할 수 있는 GPU 계산
+    def available_gpu(self):
+        return self.gpu_total - self.gpu_used
+
+    # 현재 사용할 수 있는 전력 계산
+    def available_power(self):
+        return self.power_total - self.power_used
+
+    # 자원 배정
+    def allocate(self, gpu, power):
+
+        if gpu <= 0 or power <= 0:
+            raise ValueError("요청 자원은 양수여야 합니다.")
+
+        if gpu > self.available_gpu():
+            return False
+
+        if power > self.available_power():
+            return False
+
+        self.gpu_used += gpu
+        self.power_used += power
+
+        return True
+
+    # 사용이 끝난 자원 반환
+    def release(self, gpu, power):
+
+        if gpu < 0 or power < 0:
+            raise ValueError("반환 자원은 음수일 수 없습니다.")
+
+        if gpu > self.gpu_used or power > self.power_used:
+            raise ValueError("사용량보다 많은 자원을 반환할 수 없습니다.")
+
+        self.gpu_used -= gpu
+        self.power_used -= power
 
 @dataclass
 class GameState:
     """한 번의 미션 진행 상태: ready -> incident -> finished."""
+    center: DataCenter | None = None
     phase: str = "ready"
     plan: str | None = None
     response: str | None = None
@@ -39,6 +82,10 @@ class GameState:
         plan = PLANS[plan_key]
         if plan["gpu"] > GPU_TOTAL or plan["power"] > POWER_TOTAL:
             raise ValueError("데이터센터의 자원이 부족합니다.")
+        else:
+            if not self.center.allocate(plan["gpu"], plan["power"]):
+                raise ValueError("현재 사용 가능한 자원이 부족합니다.")
+
         self.plan = plan_key
         self.gpu_used = plan["gpu"]
         self.power_used = plan["power"]
@@ -75,3 +122,5 @@ class GameState:
                 f"통신 자원이 부족하여 작업이 중단되었습니다. 운영 점수: {self.score}점."
             )
         self.phase = "finished"
+        if self.center is not None:
+            self.center.release(self.gpu_used, self.power_used)
