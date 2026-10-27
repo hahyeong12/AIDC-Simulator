@@ -27,6 +27,7 @@ class SimulatorApp:
 
         # 데이터센터 생성
         self.center = DataCenter()
+        self.other_customer_active = False
 
         # 게임 미션과 데이터센터 연결
         self.state = GameState(center=self.center)
@@ -67,6 +68,15 @@ class SimulatorApp:
             textvariable=self.status_var,
             font=("Malgun Gothic", 10),
         ).pack(anchor="w")
+        
+        # 다른 고객의 작업 시작 및 종료 버튼
+        self.other_customer_button = ttk.Button(
+            status_frame,
+            text="다른 고객 작업 시작 (GPU 4 / 전력 4)",
+            command=self.toggle_other_customer
+        )
+        
+        self.other_customer_button.pack(anchor="w", pady=(8, 0))
 
         main = ttk.Frame(wrapper)
         main.pack(fill="both", expand=True)
@@ -77,24 +87,24 @@ class SimulatorApp:
         )
         right.pack(side="right", fill="both", expand=False)
 
-        story_frame = ttk.LabelFrame(
-            left, text="운영 상황 · 스토리", padding=8
-        )
-        story_frame.pack(fill="both", expand=True)
-        self.story = ScrolledText(
-            story_frame,
-            wrap="word",
-            height=16,
-            font=("Malgun Gothic", 11),
-            padx=9,
-            pady=9,
-        )
-        self.story.pack(fill="both", expand=True)
-        self.story.configure(state="disabled")
+       # 결정할 행동 영역을 아래쪽에 먼저 배치
         self.action_frame = ttk.LabelFrame(
             left, text="결정할 행동", padding=10
         )
-        self.action_frame.pack(fill="x", pady=(12, 0))
+        self.action_frame.pack(side="bottom", fill="x", pady=(12, 0))
+        
+        # 스토리 영역은 남은 공간을 사용
+        story_frame = ttk.LabelFrame(
+            left, text="운영 상황 · 스토리", padding=8
+        )
+        story_frame.pack(side="top", fill="both", expand=True)
+        
+        self.story = ScrolledText(
+            story_frame, wrap="word", height=8,
+            font=("Malgun Gothic", 11), padx=9, pady=9
+        )
+        self.story.pack(fill="both", expand=True)
+        self.story.configure(state="disabled")
 
         self.history = ttk.Treeview(
             right,
@@ -187,6 +197,48 @@ class SimulatorApp:
                 text="새 미션 시작",
                 command=self.new_mission,
             ).pack(fill="x", pady=3)
+            
+            
+    def toggle_other_customer(self):
+
+        # 다른 고객이 이미 작업 중이라면 종료
+        if self.other_customer_active:
+    
+            self.center.release(4, 4)
+            self.other_customer_active = False
+    
+            self.other_customer_button.config(
+                text="다른 고객 작업 시작 (GPU 4 / 전력 4)"
+            )
+    
+            self.append_story(
+                "[외부 작업] 다른 고객의 작업이 종료되었습니다.",
+                store=False
+            )
+    
+        # 다른 고객이 작업 중이지 않다면 시작
+        else:
+    
+            if not self.center.allocate(4, 4):
+                messagebox.showwarning(
+                    "자원 부족",
+                    "다른 고객에게 자원을 배정할 수 없습니다."
+                )
+                return
+    
+            self.other_customer_active = True
+    
+            self.other_customer_button.config(
+                text="다른 고객 작업 종료 (GPU 4 / 전력 4)"
+            )
+    
+            self.append_story(
+                "[외부 작업] 다른 고객이 GPU 4개를 사용하기 시작했습니다.",
+                store=False
+            )
+    
+        self.update_status()        
+    
 
     def new_mission(self) -> None:
         self.state = GameState(center=self.center)
