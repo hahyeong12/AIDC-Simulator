@@ -22,6 +22,8 @@ class DataCenter:
     power_total: int = POWER_TOTAL
 
     gpu_used: int = 0
+    power_used: int = 0
+
     # 현재 사용할 수 있는 GPU 계산
     def available_gpu(self):
         return self.gpu_total - self.gpu_used
