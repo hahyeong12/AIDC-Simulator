@@ -65,10 +65,46 @@ class Database:
                           (1, "Merlion AI", "싱가포르"))
         self.conn.execute(
             "INSERT OR IGNORE INTO missions VALUES (?, ?, ?, ?)",
-            (1, 1, "싱가포르 AI 모델 학습 요청",
+            (1, 1, "생성형 AI 모델 학습 요청",
              "생성형 AI 모델 학습을 위해 GPU 서버와 안정적인 통신 회선이 필요합니다."),
         )
+        # 기존 미션 ID를 유지하여 수행 기록과 로그의 연결을 보존합니다.
+        self.conn.execute(
+            "UPDATE missions SET title=? WHERE id=1 AND client_id=1 AND title=?",
+            ("생성형 AI 모델 학습 요청", "싱가포르 AI 모델 학습 요청"),
+        )
+        for company, country, title, description in (
+            ("Sakura Robotics", "일본", "로봇 AI 모델 추론 작업",
+             "로봇이 주변 환경을 인식하고 판단하는 AI 모델을 실행하기 위해 GPU 서버 자원이 필요합니다."),
+            ("Northstar AI", "미국", "대규모 데이터 분석 작업",
+             "대량의 데이터를 분석하고 AI 기반 예측 모델을 실행하기 위해 데이터센터 자원이 필요합니다."),
+        ):
+            client = self.conn.execute(
+                "SELECT id FROM clients WHERE company_name=? AND country=? ORDER BY id LIMIT 1",
+                (company, country),
+            ).fetchone()
+            if client is None:
+                cursor = self.conn.execute(
+                    "INSERT INTO clients (company_name, country) VALUES (?, ?)",
+                    (company, country),
+                )
+                client_id = cursor.lastrowid
+            else:
+                client_id = client["id"]
+            self.conn.execute(
+                """INSERT INTO missions (client_id, title, description)
+                   SELECT ?, ?, ? WHERE NOT EXISTS (
+                       SELECT 1 FROM missions WHERE client_id=? AND title=?
+                   )""",
+                (client_id, title, description, client_id, title),
+            )
         self.conn.commit()
+
+    def get_missions(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """SELECT m.id, m.title, m.description, c.company_name, c.country
+               FROM missions m JOIN clients c ON m.client_id = c.id ORDER BY m.id"""
+        ).fetchall()
 
     def get_mission(self, mission_id: int = 1) -> sqlite3.Row:
         row = self.conn.execute(
@@ -109,7 +145,7 @@ class Database:
 
     def get_recent_results(self, limit: int = 12) -> list[sqlite3.Row]:
         return self.conn.execute(
-            """SELECT p.id, c.company_name, m.title, p.status, p.score,
+            """SELECT p.id, p.mission_id, c.company_name, c.country, m.title, p.status, p.score,
                       p.started_at, p.plan, p.response
                FROM playthroughs p JOIN missions m ON p.mission_id = m.id
                JOIN clients c ON m.client_id = c.id

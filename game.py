@@ -118,7 +118,7 @@ class GameState:
         if self.succeeded:
             self.result_text = (
                 f"요청 처리 성공! 필요 네트워크 {required} / 가용 {available}단위. "
-                f"고객의 학습 요청이 정상 완료되었습니다. 운영 점수: {self.score}점."
+                f"고객의 작업 요청이 정상 완료되었습니다. 운영 점수: {self.score}점."
             )
         else:
             self.result_text = (

@@ -166,7 +166,7 @@ class AppFlowTests(unittest.TestCase):
         self.app.playthrough_id = None
         self.app.other_customer_active = False
         for name in ("append_story", "update_status", "render_actions", "refresh_history",
-                     "other_customer_button", "story", "status_var"):
+                     "other_customer_button", "story", "status_var", "mission_list"):
             setattr(self.app, name, Mock())
         self.dialogs = patch("main.messagebox")
         self.messages = self.dialogs.start()

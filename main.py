@@ -1,4 +1,4 @@
-"""AIDC Simulator v0.2: Tkinter 기반 운영 시뮬레이션 GUI."""
+"""AIDC Simulator v0.3: Tkinter 기반 운영 시뮬레이션 GUI."""
 
 from dataclasses import replace
 import tkinter as tk
@@ -18,8 +18,8 @@ class SimulatorApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("AIDC Simulator | 울산 데이터센터 운영실")
-        self.root.geometry("1040x710")
-        self.root.minsize(850, 600)
+        self.root.geometry("1180x800")
+        self.root.minsize(1000, 720)
 
         self.db = Database()
         self.mission = self.db.get_mission()
@@ -77,6 +77,29 @@ class SimulatorApp:
         
         self.other_customer_button.pack(anchor="w", pady=(8, 0))
 
+        mission_frame = ttk.LabelFrame(wrapper, text="요청된 미션 (진행 중에는 변경할 수 없습니다)", padding=8)
+        mission_frame.pack(fill="x", pady=(0, 12))
+        self.mission_list = ttk.Treeview(
+            mission_frame, columns=("company", "country", "title"),
+            show="headings", height=3, selectmode="browse",
+        )
+        for key, label, width in (
+            ("company", "고객사", 200), ("country", "국가", 80), ("title", "요청 내용", 550),
+        ):
+            self.mission_list.heading(key, text=label)
+            self.mission_list.column(key, width=width, minwidth=70)
+        mission_scroll = ttk.Scrollbar(mission_frame, orient="vertical", command=self.mission_list.yview)
+        self.mission_list.configure(yscrollcommand=mission_scroll.set)
+        self.mission_list.pack(side="left", fill="x", expand=True)
+        mission_scroll.pack(side="right", fill="y")
+        for mission in self.db.get_missions():
+            self.mission_list.insert(
+                "", "end", iid=str(mission["id"]),
+                values=(mission["company_name"], mission["country"], mission["title"]),
+            )
+        self.mission_list.selection_set(str(self.mission["id"]))
+        self.mission_list.bind("<<TreeviewSelect>>", self.on_mission_selected)
+
         main = ttk.Frame(wrapper)
         main.pack(fill="both", expand=True)
         left = ttk.Frame(main)
@@ -84,7 +107,9 @@ class SimulatorApp:
         right = ttk.LabelFrame(
             main, text="완료 기록 (더블클릭: 상세 로그)", padding=8
         )
+        right.configure(width=430)
         right.pack(side="right", fill="both", expand=False)
+        right.pack_propagate(False)
 
        # 결정할 행동 영역을 아래쪽에 먼저 배치
         self.action_frame = ttk.LabelFrame(
@@ -99,7 +124,7 @@ class SimulatorApp:
         story_frame.pack(side="top", fill="both", expand=True)
         
         self.story = ScrolledText(
-            story_frame, wrap="word", height=8,
+            story_frame, wrap="word", height=8, width=45,
             font=("Malgun Gothic", 11), padx=9, pady=9
         )
         self.story.pack(fill="both", expand=True)
@@ -107,21 +132,27 @@ class SimulatorApp:
 
         self.history = ttk.Treeview(
             right,
-            columns=("id", "result", "score"),
+            columns=("id", "company", "country", "title", "result", "score"),
             show="headings",
             height=20,
         )
         for key, name, width in [
-            ("id", "회차", 60),
-            ("result", "결과", 65),
-            ("score", "점수", 65),
+            ("id", "회차", 50),
+            ("company", "고객사", 125),
+            ("country", "국가", 55),
+            ("title", "미션", 210),
+            ("result", "결과", 55),
+            ("score", "점수", 50),
         ]:
             self.history.heading(key, text=name)
-            self.history.column(key, width=width, minwidth=50, anchor="center")
+            self.history.column(key, width=width, minwidth=50, anchor="center", stretch=False)
         sb = ttk.Scrollbar(
             right, orient="vertical", command=self.history.yview
         )
         self.history.configure(yscrollcommand=sb.set)
+        history_scroll = ttk.Scrollbar(right, orient="horizontal", command=self.history.xview)
+        self.history.configure(xscrollcommand=history_scroll.set)
+        history_scroll.pack(side="bottom", fill="x")
         self.history.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         self.history.bind("<Double-1>", self.show_record)
@@ -158,6 +189,7 @@ class SimulatorApp:
         )
 
     def render_actions(self) -> None:
+        self.mission_list.configure(selectmode="none" if self.state.phase == "incident" else "browse")
         for widget in self.action_frame.winfo_children():
             widget.destroy()
         if self.state.phase == "ready":
@@ -239,6 +271,30 @@ class SimulatorApp:
         self.update_status()        
     
 
+    def on_mission_selected(self, _event=None) -> None:
+        selected = self.mission_list.selection()
+        if selected:
+            self.select_mission(int(selected[0]))
+
+    def select_mission(self, mission_id: int) -> None:
+        if self.state.phase == "incident":
+            # 직접 호출이나 지연된 선택 이벤트도 진행 중인 미션을 바꾸지 못하게 합니다.
+            current = str(self.mission["id"])
+            if self.mission_list.selection() != (current,):
+                self.mission_list.selection_set(current)
+            return
+        if mission_id == self.mission["id"]:
+            return
+        try:
+            mission = self.db.get_mission(mission_id)
+        except Exception as exc:
+            messagebox.showerror("미션 선택 오류", str(exc))
+            self.mission_list.selection_set(str(self.mission["id"]))
+            return
+        self.mission = mission
+        self.mission_list.selection_set(str(mission_id))
+        self.new_mission()
+
     def new_mission(self) -> None:
         if self.state.phase == "incident":
             messagebox.showwarning("미션 진행 중", "현재 미션의 장애 대응을 먼저 완료해 주세요.")
@@ -270,9 +326,11 @@ class SimulatorApp:
                     self.mission["id"], key
                 )
                 messages = [
+                    f"[고객 요청] {self.mission['company_name']} ({self.mission['country']}) · {self.mission['title']}\n"
+                    f"{self.mission['description']}\n"
                     f"[자원 배정] {PLANS[key]['label']} 선택. "
                     f"GPU {self.state.gpu_used}개, 전력 {self.state.power_used}단위 배정.",
-                    "[긴급 알림] 동남아 연결 구간의 가상 해저 통신 회선에 장애가 발생했습니다!\n"
+                    "[긴급 알림] 울산 AIDC와 해외 고객을 연결하는 국제 네트워크 회선에 장애가 발생했습니다!\n"
                     "네트워크 가용량이 8에서 2단위로 감소했습니다. 대응 방법을 선택해 주십시오.",
                 ]
                 for message in messages:
@@ -326,7 +384,7 @@ class SimulatorApp:
                 "",
                 "end",
                 iid=str(row["id"]),
-                values=(row["id"], row["status"], row["score"]),
+                values=(row["id"], row["company_name"], row["country"], row["title"], row["status"], row["score"]),
             )
 
     def show_record(self, _event=None) -> None:
