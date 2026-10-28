@@ -1,5 +1,6 @@
 """SQLite 데이터 저장: 고객, 미션, 수행 결과, 사건 로그."""
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -16,6 +17,18 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.init_schema()
+
+    @contextmanager
+    def transaction(self):
+        """여러 저장 작업도 실패 시 함께 취소합니다. 중첩 호출도 지원합니다."""
+        self.conn.execute("SAVEPOINT game_save")
+        try:
+            yield
+            self.conn.execute("RELEASE SAVEPOINT game_save")
+        except Exception:
+            self.conn.execute("ROLLBACK TO SAVEPOINT game_save")
+            self.conn.execute("RELEASE SAVEPOINT game_save")
+            raise
 
     def init_schema(self) -> None:
         self.conn.executescript("""
@@ -68,7 +81,7 @@ class Database:
         return row
 
     def create_playthrough(self, mission_id: int, plan: str) -> int:
-        with self.conn:
+        with self.transaction():
             cursor = self.conn.execute(
                 "INSERT INTO playthroughs (mission_id,plan,status,started_at) VALUES (?,?,'진행중',?)",
                 (mission_id, plan, now_text()),
@@ -76,7 +89,7 @@ class Database:
         return int(cursor.lastrowid)
 
     def add_log(self, playthrough_id: int, message: str) -> None:
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 "INSERT INTO event_logs (playthrough_id,message,created_at) VALUES (?,?,?)",
                 (playthrough_id, message, now_text()),
@@ -84,13 +97,15 @@ class Database:
 
     def save_result(self, playthrough_id: int, response: str,
                     succeeded: bool, score: int, result_text: str) -> None:
-        with self.conn:
-            self.conn.execute(
+        with self.transaction():
+            cursor = self.conn.execute(
                 """UPDATE playthroughs SET response=?, status=?, score=?, result_text=?,
                    finished_at=? WHERE id=?""",
                 (response, "성공" if succeeded else "실패", score,
                  result_text, now_text(), playthrough_id),
             )
+            if cursor.rowcount != 1:
+                raise ValueError(f"수행 기록 {playthrough_id}을 찾을 수 없습니다.")
 
     def get_recent_results(self, limit: int = 12) -> list[sqlite3.Row]:
         return self.conn.execute(

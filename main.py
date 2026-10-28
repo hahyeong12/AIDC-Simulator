@@ -1,5 +1,6 @@
-"""AIDC Simulator v0.1: Tkinter 기반 운영 시뮬레이션 GUI."""
+"""AIDC Simulator v0.2: Tkinter 기반 운영 시뮬레이션 GUI."""
 
+from dataclasses import replace
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
@@ -10,8 +11,6 @@ from game import (
     DataCenter,
     PLANS,
     RESPONSES,
-    GPU_TOTAL,
-    POWER_TOTAL,
 )
 
 
@@ -151,8 +150,8 @@ class SimulatorApp:
 
         self.status_var.set(
             f"상태: {phase_name}    |    "
-            f"GPU: {self.center.gpu_used}/{GPU_TOTAL} 사용    |    "
-            f"전력: {self.center.power_used}/{POWER_TOTAL} 사용    |    "
+            f"GPU: {self.center.gpu_used}/{self.center.gpu_total} 사용    |    "
+            f"전력: {self.center.power_used}/{self.center.power_total} 사용    |    "
             f"네트워크: 필요 {s.network_needed} / 가용 {s.network_available}    |    "
             f"점수: {score}\n"
             f"잔여 자원: GPU {gpu_remaining}개    |    전력 {power_remaining}단위"
@@ -241,6 +240,9 @@ class SimulatorApp:
     
 
     def new_mission(self) -> None:
+        if self.state.phase == "incident":
+            messagebox.showwarning("미션 진행 중", "현재 미션의 장애 대응을 먼저 완료해 주세요.")
+            return
         self.state = GameState(center=self.center)
         self.playthrough_id = None
         self.story.configure(state="normal")
@@ -258,41 +260,63 @@ class SimulatorApp:
         self.refresh_history()
 
     def choose_plan(self, key: str) -> None:
+        previous = replace(self.state)
+        usage = (self.center.gpu_used, self.center.power_used)
+        previous_id = self.playthrough_id
         try:
-            self.state.choose_plan(key)
-            self.playthrough_id = self.db.create_playthrough(
-                self.mission["id"], key
-            )
-            self.append_story(
-                f"[자원 배정] {PLANS[key]['label']} 선택. "
-                f"GPU {self.state.gpu_used}개, 전력 {self.state.power_used}단위 배정."
-            )
-            self.append_story(
-                "[긴급 알림] 동남아 연결 구간의 가상 해저 통신 회선에 장애가 발생했습니다!\n"
-                "네트워크 가용량이 8에서 2단위로 감소했습니다. 대응 방법을 선택해 주십시오."
-            )
-            self.update_status()
-            self.render_actions()
+            with self.db.transaction():
+                self.state.choose_plan(key)
+                self.playthrough_id = self.db.create_playthrough(
+                    self.mission["id"], key
+                )
+                messages = [
+                    f"[자원 배정] {PLANS[key]['label']} 선택. "
+                    f"GPU {self.state.gpu_used}개, 전력 {self.state.power_used}단위 배정.",
+                    "[긴급 알림] 동남아 연결 구간의 가상 해저 통신 회선에 장애가 발생했습니다!\n"
+                    "네트워크 가용량이 8에서 2단위로 감소했습니다. 대응 방법을 선택해 주십시오.",
+                ]
+                for message in messages:
+                    self.db.add_log(self.playthrough_id, message)
         except Exception as exc:
+            self.state = previous
+            self.center.gpu_used, self.center.power_used = usage
+            self.playthrough_id = previous_id
             messagebox.showerror("처리 오류", str(exc))
+            return
+        for message in messages:
+            self.append_story(message, store=False)
+        self.update_status()
+        self.render_actions()
 
     def respond(self, key: str) -> None:
+        previous = replace(self.state)
+        usage = (self.center.gpu_used, self.center.power_used)
         try:
-            self.state.resolve(key)
-            self.append_story(f"[운영 조치] {RESPONSES[key]['label']} 선택.")
-            self.append_story(f"[처리 결과] {self.state.result_text}")
-            self.db.save_result(
-                self.playthrough_id,
-                key,
-                bool(self.state.succeeded),
-                int(self.state.score),
-                self.state.result_text,
-            )
-            self.update_status()
-            self.render_actions()
-            self.refresh_history()
+            with self.db.transaction():
+                self.state.resolve(key)
+                messages = [
+                    f"[운영 조치] {RESPONSES[key]['label']} 선택.",
+                    f"[처리 결과] {self.state.result_text}",
+                ]
+                for message in messages:
+                    self.db.add_log(self.playthrough_id, message)
+                self.db.save_result(
+                    self.playthrough_id,
+                    key,
+                    bool(self.state.succeeded),
+                    int(self.state.score),
+                    self.state.result_text,
+                )
         except Exception as exc:
+            self.state = previous
+            self.center.gpu_used, self.center.power_used = usage
             messagebox.showerror("처리 오류", str(exc))
+            return
+        for message in messages:
+            self.append_story(message, store=False)
+        self.update_status()
+        self.render_actions()
+        self.refresh_history()
 
     def refresh_history(self) -> None:
         for item in self.history.get_children():

@@ -76,17 +76,19 @@ class GameState:
     succeeded: bool | None = None
     result_text: str = ""
 
+    def __post_init__(self) -> None:
+        # 기본 생성과 명시적인 None 모두 독립된 데이터센터로 연결합니다.
+        if self.center is None:
+            self.center = DataCenter()
+
     def choose_plan(self, plan_key: str) -> None:
         if self.phase != "ready":
             raise ValueError("자원 배분은 미션 시작 전에만 선택할 수 있습니다.")
         if plan_key not in PLANS:
             raise ValueError("존재하지 않는 운영 모드입니다.")
         plan = PLANS[plan_key]
-        if plan["gpu"] > GPU_TOTAL or plan["power"] > POWER_TOTAL:
-            raise ValueError("데이터센터의 자원이 부족합니다.")
-        else:
-            if not self.center.allocate(plan["gpu"], plan["power"]):
-                raise ValueError("현재 사용 가능한 자원이 부족합니다.")
+        if not self.center.allocate(plan["gpu"], plan["power"]):
+            raise ValueError("현재 사용 가능한 자원이 부족합니다.")
 
         self.plan = plan_key
         self.gpu_used = plan["gpu"]
