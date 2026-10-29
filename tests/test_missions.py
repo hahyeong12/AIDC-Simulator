@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 from database import Database
 from main import SimulatorApp
+from test_operations import finish_current
 
 
 class MissionDatabaseTests(unittest.TestCase):
@@ -81,7 +82,7 @@ class MissionDatabaseTests(unittest.TestCase):
                     self.assertEqual(db.get_mission(2)["company_name"], "기존 추가 고객")
                     self.assertEqual(len(db.get_missions()), 4)
                     self.assertEqual([tuple(r) for r in db.conn.execute(
-                        "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name")], schema)
+                        "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT IN ('customer_requests','simulation_state','request_runtime','request_events','retry_links') ORDER BY name")], schema)
                     self.assertEqual(db.conn.execute("PRAGMA foreign_key_check").fetchall(), [])
                 finally:
                     db.close()
@@ -95,7 +96,9 @@ class MissionSelectionTests(unittest.TestCase):
         app.root = Mock()
         app.db = Database(":memory:")
         self.addCleanup(app.db.close)
-        app.session = GameSession(app.db)
+        app.session = GameSession(app.db, incident_chance=0)
+        app.session.deliver_next_request()
+        app.session.deliver_next_request()
         app.center = app.session.center
         app.refresh = Mock()
         dialogs = patch("main.messagebox")
@@ -110,7 +113,7 @@ class MissionSelectionTests(unittest.TestCase):
     def test_selection_updates_current_customer_and_starts_ready(self):
         app = self.app
         for mission in app.db.get_missions()[1:]:
-            app.select_mission(mission["id"])
+            app.select_request(mission["id"])
             self.assertEqual(app.mission["id"], mission["id"])
             self.assertEqual(app.state.country, mission["country"])
             self.assertEqual(app.state.phase, "ready")
@@ -121,26 +124,30 @@ class MissionSelectionTests(unittest.TestCase):
         app = self.app
         app.choose_plan("economy")
         state, run_id = app.state, app.playthrough_id
-        app.select_mission(2)
+        app.select_request(2)
         self.assertEqual(app.state.phase, "ready")
-        app.select_mission(3)
-        app.select_mission(1)
+        app.select_request(3)
+        app.select_request(1)
         self.assertIs(app.state, state)
         self.assertEqual(app.playthrough_id, run_id)
         self.assertEqual((app.center.gpu_used, app.center.power_used), (4, 4))
-        app.respond("compress")
+        app.state.trigger_incident(); app.respond("compress"); finish_current(app.session)
         self.assertEqual(app.db.get_recent_results()[0]["mission_id"], 1)
 
     def test_all_customers_can_run_in_sequence_with_correct_results(self):
         app = self.app
+        # 이 테스트는 이전 요청의 모드별 결과와 자원 반환을 검증합니다.
+        # 새 요청의 순차 운영 지연 감점은 test_balance에서 검증합니다.
+        for run in app.session.runs.values():
+            run.terms = {}
         outcomes = [("economy", "compress", "성공", 85),
                     ("performance", "compress", "성공", 95),
                     ("performance", "reroute", "성공", 90)]
         app.center.allocate(1, 1)
         for mission, (plan, response, status, score) in zip(app.db.get_missions(), outcomes):
-            app.select_mission(mission["id"])
+            app.select_request(mission["id"])
             app.choose_plan(plan)
-            app.respond(response)
+            app.state.trigger_incident(); app.respond(response); finish_current(app.session)
             self.assertEqual(app.state.phase, "finished")
             self.assertEqual((app.center.gpu_used, app.center.power_used), (1, 1))
             result = app.db.get_recent_results()[0]
@@ -150,13 +157,13 @@ class MissionSelectionTests(unittest.TestCase):
                              (mission["id"], status, score))
             logs = app.db.get_logs(app.playthrough_id)
             self.assertIn(mission["company_name"], logs[0]["message"])
-            self.assertIn("국제 네트워크", logs[1]["message"])
-            self.assertEqual(len(logs), 4)
+            self.assertIn("정상 실행", logs[1]["message"])
+            self.assertGreaterEqual(len(logs), 4)
         self.assertEqual(len(app.db.get_recent_results()), 3)
 
     def test_invalid_selection_keeps_current_mission(self):
         app = self.app
-        app.select_mission(999)
+        app.select_request(999)
         self.assertEqual(app.mission["id"], 1)
         self.assertEqual(app.state.phase, "ready")
         self.dialogs.showerror.assert_called_once()

@@ -23,10 +23,15 @@
 - 프로젝트명: AIDC Simulator
 - 기술: Python, Tkinter GUI, SQLite 데이터베이스
 - 목적: 가상의 울산 AI 데이터센터를 운영하는 미션 기반 시뮬레이션 게임
-- 현재 버전: v0.2 안정화 완료
+- 현재 버전: v0.6 게임 밸런스·고객 기한·사건별 메시지 개선 완료 (139개 테스트)
 - `main.py`: GUI 및 사용자 입력 처리
+- `ui.py`: 단계별 업무 메신저·사유 입력 창·네트워크 및 자원 미리보기
+- `session.py`: 요청·가상 시간·동시 작업·장애 및 후속 대응·저장과 이어하기
 - `game.py`: 게임 규칙과 자원 관리
 - `database.py`: 데이터베이스 처리
+- 새 요청만 고객별 기한·지연 감점을 적용합니다. 이전 runtime에 terms가 없으면 기한 평가에서 제외하며 과거 기록의 점수를 소급 변경하지 않습니다.
+- 기한·알림 여부·대화 확인 지점은 runtime JSON 버전 2에 저장하며 기존 SQL 테이블과 CHECK를 유지합니다.
+- `tests/test_balance.py`: 고정 접수 일정·시드에서 전략 A/B/C 비교. `python -m tests.test_balance`로 수치 출력
 - `tests/`: 자동화 테스트
 - 테스트 명령: `python -m unittest discover -s tests -v`
 

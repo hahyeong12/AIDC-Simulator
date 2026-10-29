@@ -80,9 +80,30 @@ class DataCenter:
         self.gpu_used -= gpu
         self.power_used -= power
 
+ACTIVE_PHASES = ("running", "incident", "paused", "recovering")
+WORK_TOTAL = {"싱가포르": 120, "일본": 60, "미국": 100}
+# 접수부터 배정 권장/완료/최종 접수 종료까지의 분. 교육용 가상 SLA입니다.
+REQUEST_WINDOWS = {
+    "싱가포르": ("일반 · 모델 학습", 60, 210, 330),
+    "일본": ("긴급 · 로봇 추론", 20, 70, 190),
+    "미국": ("우선 · 데이터 분석", 40, 120, 240),
+}
+MODE_SPEEDS = {"performance": 1, "economy": .7}
+
+
+def game_time(minute):
+    return f'D{minute//1440+1} {minute//60%24:02d}:{minute%60:02d}'
+
+
+def request_terms(country, minute):
+    priority, start, due, expiry = REQUEST_WINDOWS.get(country, REQUEST_WINDOWS["싱가포르"])
+    return {'priority': priority, 'received': minute, 'start_due': minute+start,
+            'due': minute+due, 'expires': minute+expiry, 'alerts': []}
+
+
 @dataclass
 class GameState:
-    """한 번의 미션 진행 상태: ready -> incident -> finished."""
+    """요청과 독립적인 작업 상태. 모든 시간/속도/비용 수치는 교육용 가상 설정입니다."""
     center: DataCenter | None = None
     phase: str = "ready"
     plan: str | None = None
@@ -95,60 +116,118 @@ class GameState:
     succeeded: bool | None = None
     result_text: str = ""
     country: str = "싱가포르"
+    work_done: float = 0
+    elapsed: int = 0
+    downtime: int = 0
+    recovery_left: int = 0
+    incident_at: float | None = None
+    incident_occurred: bool = False
+    response_attempts: int = 0
+    cost_penalty: int = 0
+    retry_count: int = 0
 
-    @property
-    def plans(self) -> dict:
-        return plans_for(self.country)
-
-    def __post_init__(self) -> None:
-        # 기본 생성과 명시적인 None 모두 독립된 데이터센터로 연결합니다.
+    def __post_init__(self):
         if self.center is None:
             self.center = DataCenter()
 
-    def choose_plan(self, plan_key: str) -> None:
-        if self.phase != "ready":
-            raise ValueError("자원 배분은 미션 시작 전에만 선택할 수 있습니다.")
-        if plan_key not in PLANS:
+    @property
+    def plans(self):
+        return plans_for(self.country)
+
+    @property
+    def allocated(self):
+        return self.phase in ACTIVE_PHASES
+
+    @property
+    def work_total(self):
+        return WORK_TOTAL.get(self.country, 120)
+
+    @property
+    def progress(self):
+        return min(100, self.work_done / self.work_total * 100)
+
+    @property
+    def remaining_minutes(self):
+        return self.estimate_minutes(self.plan or "performance")
+
+    def estimate_minutes(self, plan_key):
+        import math
+        speed = MODE_SPEEDS[plan_key]
+        return max(0, math.ceil((self.work_total-self.work_done)/speed/10)*10) + self.recovery_left
+
+    def choose_plan(self, plan_key):
+        if self.phase not in ("ready", "accepted"):
+            raise ValueError("이미 시작한 작업은 중복 배정할 수 없습니다.")
+        if plan_key not in self.plans:
             raise ValueError("존재하지 않는 운영 모드입니다.")
         plan = self.plans[plan_key]
         if not self.center.allocate(plan["gpu"], plan["power"]):
             raise ValueError("현재 사용 가능한 자원이 부족합니다.")
+        self.plan, self.gpu_used, self.power_used = plan_key, plan["gpu"], plan["power"]
+        self.network_needed, self.network_available = plan["network"], NETWORK_NORMAL
+        self.phase = "recovering" if self.retry_count else "running"
+        self.recovery_left = 20 if self.retry_count else 0
 
-        self.plan = plan_key
-        self.gpu_used = plan["gpu"]
-        self.power_used = plan["power"]
-        self.network_needed = plan["network"]
+    def trigger_incident(self):
+        if self.phase != "running":
+            raise ValueError("정상 실행 중인 작업에서만 장애가 발생합니다.")
+        self.incident_occurred = True
         self.network_available = NETWORK_DURING_INCIDENT
         self.phase = "incident"
 
-    def resolve(self, response_key: str) -> None:
-        if self.phase != "incident" or self.plan is None:
-            raise ValueError("장애가 발생한 뒤에만 대응할 수 있습니다.")
+    def advance(self, minutes):
+        if minutes <= 0:
+            raise ValueError("진행 시간은 양수여야 합니다.")
+        if not self.allocated:
+            return
+        self.elapsed += minutes
+        if self.phase in ("incident", "paused"):
+            self.downtime += minutes
+            if self.downtime >= 60:
+                self.response = self.response or "timeout"
+                self.finish(False, "장애 중단 60분을 초과하여 이번 수행에 실패했습니다.")
+            return
+        if self.phase == "recovering":
+            consumed = min(minutes, self.recovery_left)
+            self.recovery_left -= consumed
+            minutes -= consumed
+            if self.recovery_left:
+                return
+            self.phase = "running"
+        self.work_done = min(self.work_total, self.work_done + minutes*MODE_SPEEDS[self.plan])
+        if self.incident_at is not None and not self.incident_occurred and self.work_done >= self.incident_at:
+            self.trigger_incident()
+        elif self.work_done >= self.work_total:
+            self.finish(True, "고객의 AI 작업이 정상 완료되었습니다.")
+
+    def resolve(self, response_key):
+        if self.phase not in ("incident", "paused") or self.plan is None:
+            raise ValueError("장애 또는 중단 상태에서만 대응할 수 있습니다.")
         if response_key not in RESPONSES:
             raise ValueError("존재하지 않는 장애 대응 방법입니다.")
         self.response = response_key
-        available = self.network_available
-        required = self.network_needed
+        self.response_attempts += 1
+        self.cost_penalty += RESPONSES[response_key]["penalty"]
         if response_key == "reroute":
-            available = min(NETWORK_NORMAL, available + 4)
+            self.network_available = min(NETWORK_NORMAL, self.network_available + 4)
         elif response_key == "compress":
-            required = max(1, required - 2)
-        self.network_available = available
-        self.network_needed = required
-        self.succeeded = required <= available
-        base_score = 80 + self.plans[self.plan]["bonus"]
-        penalty = RESPONSES[response_key]["penalty"]
-        self.score = max(0, min(100, base_score - penalty + (10 if self.succeeded else -65)))
-        if self.succeeded:
-            self.result_text = (
-                f"요청 처리 성공! 필요 네트워크 {required} / 가용 {available}단위. "
-                f"고객의 작업 요청이 정상 완료되었습니다. 운영 점수: {self.score}점."
-            )
+            self.network_needed = max(1, self.network_needed - 2)
+        if self.network_needed <= self.network_available:
+            self.phase = "recovering"
+            self.recovery_left = 10
+            self.result_text = "네트워크 복구에 성공했습니다. 10분 복구 후 작업을 재개합니다."
+        elif self.response_attempts >= 3:
+            self.finish(False, "장애 대응 3회가 실패하여 이번 수행을 중단했습니다. 후속 조치를 선택해 주세요.")
         else:
-            self.result_text = (
-                f"요청 처리 실패. 필요 네트워크 {required} / 가용 {available}단위. "
-                f"통신 자원이 부족하여 작업이 중단되었습니다. 운영 점수: {self.score}점."
-            )
-        self.phase = "finished"
-        if self.center is not None:
-            self.center.release(self.gpu_used, self.power_used)
+            self.phase = "paused"
+            self.result_text = "복구 자원이 부족하여 일시 중단되었습니다. 다른 대응을 재시도할 수 있습니다."
+
+    def finish(self, succeeded, text):
+        if not self.allocated:
+            raise ValueError("운영 중인 수행만 종료할 수 있습니다.")
+        self.center.release(self.gpu_used, self.power_used)
+        self.phase, self.succeeded = "finished", succeeded
+        base = 80+self.plans[self.plan]["bonus"]
+        self.score = max(0, min(100, base-self.cost_penalty-10*self.retry_count
+                               -min(20,self.downtime//10)+(10 if succeeded else -65)))
+        self.result_text = f"{text} 운영 점수: {self.score}점."

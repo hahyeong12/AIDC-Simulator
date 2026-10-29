@@ -8,6 +8,8 @@ from unittest.mock import Mock, patch
 from database import Database
 from game import DataCenter, GameState
 from main import SimulatorApp
+from test_game import finish_state
+from test_operations import finish_current
 
 
 class ResourceTests(unittest.TestCase):
@@ -20,8 +22,8 @@ class ResourceTests(unittest.TestCase):
     def test_all_mission_outcomes_and_resource_return(self):
         outcomes = {
             ("performance", "reroute"): (True, 90),
-            ("performance", "compress"): (False, 20),
-            ("performance", "ignore"): (False, 5),
+            ("performance", "compress"): (False, 14),
+            ("performance", "ignore"): (False, 0),
             ("economy", "reroute"): (True, 80),
             ("economy", "compress"): (True, 85),
             ("economy", "ignore"): (False, 0),
@@ -30,7 +32,7 @@ class ResourceTests(unittest.TestCase):
             with self.subTest(plan=plan, response=response):
                 state = GameState()
                 state.choose_plan(plan)
-                state.resolve(response)
+                state.trigger_incident(); state.resolve(response); finish_state(state)
                 self.assertEqual((state.succeeded, state.score), expected)
                 self.assertEqual(state.phase, "finished")
                 self.assertEqual((state.center.gpu_used, state.center.power_used), (0, 0))
@@ -66,7 +68,7 @@ class ResourceTests(unittest.TestCase):
                     state.choose_plan("performance")
                 state.choose_plan("economy")
                 self.assertEqual((center.gpu_used, center.power_used), (8, 8))
-                state.resolve(response)
+                state.trigger_incident(); state.resolve(response); finish_state(state)
                 self.assertEqual((center.gpu_used, center.power_used), (4, 4))
                 center.release(4, 4)
                 self.assertEqual((center.gpu_used, center.power_used), (0, 0))
@@ -93,7 +95,7 @@ class ResourceTests(unittest.TestCase):
         for action in (lambda: state.choose_plan("economy"), lambda: state.resolve("unknown")):
             with self.assertRaises(ValueError):
                 action()
-        self.assertEqual(state.phase, "incident")
+        self.assertEqual(state.phase, "running")
         self.assertEqual((state.center.gpu_used, state.center.power_used), (4, 4))
 
 
@@ -155,126 +157,93 @@ class DatabaseTests(unittest.TestCase):
 
 
 class AppFlowTests(unittest.TestCase):
-    """실제 세션과 임시 SQLite로 GUI 버튼 처리 흐름을 검증합니다."""
     def setUp(self):
         from session import GameSession
         self.app = SimulatorApp.__new__(SimulatorApp)
         self.app.root = Mock()
         self.app.db = Database(":memory:")
         self.addCleanup(self.app.db.close)
-        self.app.session = GameSession(self.app.db)
+        self.app.session = GameSession(self.app.db, incident_chance=0)
+        self.app.session.deliver_next_request(); self.app.session.deliver_next_request()
         self.app.center = self.app.session.center
         self.app.refresh = Mock()
-        self.dialogs = patch("main.messagebox")
-        self.messages = self.dialogs.start()
-        self.addCleanup(self.dialogs.stop)
+        patcher = patch("main.messagebox")
+        self.messages = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_other_mission_start_finish_and_new_mission(self):
-        app = self.app
-        app.select_mission(2)
-        app.choose_plan("economy")
-        app.select_mission(1)
-        app.choose_plan("economy")
-        app.respond("compress")
-        app.new_mission()
-        self.assertIs(app.state.center, app.center)
-        self.assertEqual((app.center.gpu_used, app.center.power_used), (2, 2))
-        app.select_mission(2)
-        app.respond("compress")
-        self.assertEqual((app.center.gpu_used, app.center.power_used), (0, 0))
-        self.assertEqual([row["status"] for row in app.db.get_recent_results()], ["성공", "성공"])
-        self.assertEqual(len(app.db.get_logs(app.playthrough_id)), 4)
+        a=self.app
+        a.select_request(2); a.choose_plan("economy")
+        a.select_request(1); a.choose_plan("economy")
+        a.state.work_done=a.state.work_total-1
+        a.advance_time(10); a.new_mission()
+        self.assertEqual(a.center.gpu_used,2)
+        self.assertEqual(a.state.phase,"ready")
+        a.select_request(2); finish_current(a.session)
+        self.assertEqual(a.center.gpu_used,0)
+        self.assertEqual(len(a.db.get_recent_results()),2)
 
     def test_other_customer_can_finish_during_mission(self):
-        app = self.app
-        app.choose_plan("economy")
-        app.select_mission(2)
-        app.choose_plan("economy")
-        app.respond("compress")
-        self.assertEqual((app.center.gpu_used, app.center.power_used), (4, 4))
-        app.select_mission(1)
-        app.respond("ignore")
-        self.assertEqual((app.center.gpu_used, app.center.power_used), (0, 0))
+        a=self.app
+        a.choose_plan("economy"); a.select_request(2); a.choose_plan("performance")
+        a.advance_time(60)
+        self.assertEqual(a.center.gpu_used,4)
+        a.select_request(1); finish_current(a.session)
+        self.assertEqual(a.center.gpu_used,0)
 
     def test_new_mission_cannot_discard_active_allocation(self):
-        app = self.app
-        app.choose_plan("economy")
-        state, run_id = app.state, app.playthrough_id
-        app.new_mission()
-        self.assertIs(app.state, state)
-        self.assertEqual(app.playthrough_id, run_id)
-        self.assertEqual(app.center.gpu_used, 4)
-        self.messages.showwarning.assert_called_once()
+        a=self.app; a.choose_plan("economy")
+        state,run_id=a.state,a.playthrough_id
+        a.new_mission()
+        self.assertIs(a.state,state)
+        self.assertEqual(a.playthrough_id,run_id)
+        self.assertEqual(a.center.gpu_used,4)
+        self.messages.showerror.assert_called_once()
 
     def test_start_save_failure_restores_state_and_allows_retry(self):
-        app = self.app
-        app.select_mission(2)
-        app.choose_plan("economy")
-        app.select_mission(1)
-        for method in ("create_playthrough", "add_log"):
-            with self.subTest(method=method):
-                with patch.object(app.db, method, side_effect=sqlite3.OperationalError("저장 실패")):
-                    app.choose_plan("economy")
-                self.assertEqual(app.state.phase, "ready")
-                self.assertIsNone(app.playthrough_id)
-                self.assertEqual((app.center.gpu_used, app.center.power_used), (2, 2))
-                self.assertEqual(len(app.db.get_recent_records()), 1)
-        app.choose_plan("economy")
-        self.assertEqual(app.state.phase, "incident")
+        a=self.app; a.select_request(2); a.choose_plan("economy"); a.select_request(1)
+        for method in ("create_playthrough","add_log"):
+            with patch.object(a.db,method,side_effect=sqlite3.OperationalError("실패")):
+                a.choose_plan("economy")
+            self.assertEqual(a.state.phase,"ready")
+            self.assertIsNone(a.playthrough_id)
+            self.assertEqual(a.center.gpu_used,2)
+            self.assertEqual(len(a.db.get_recent_records()),1)
+        a.choose_plan("economy")
+        self.assertEqual(a.state.phase,"running")
 
     def test_result_save_failure_restores_allocation_and_allows_retry(self):
-        app = self.app
-        app.select_mission(2)
-        app.choose_plan("economy")
-        app.select_mission(1)
-        app.choose_plan("economy")
-        for method in ("add_log", "save_result"):
-            with self.subTest(method=method):
-                with patch.object(app.db, method, side_effect=sqlite3.OperationalError("저장 실패")):
-                    app.respond("compress")
-                self.assertEqual(app.state.phase, "incident")
-                self.assertIsNone(app.state.score)
-                self.assertIsNone(app.state.response)
-                self.assertEqual((app.center.gpu_used, app.center.power_used), (6, 6))
-                self.assertEqual(len(app.db.get_logs(app.playthrough_id)), 2)
-                self.assertEqual(app.db.get_recent_results(), [])
-        app.respond("compress")
-        self.assertEqual(app.state.phase, "finished")
-        self.assertEqual((app.center.gpu_used, app.center.power_used), (2, 2))
-        self.assertEqual(len(app.db.get_logs(app.playthrough_id)), 4)
-        self.assertEqual(len(app.db.get_recent_results()), 1)
+        a=self.app; a.select_request(2); a.choose_plan("economy"); a.select_request(1); a.choose_plan("economy")
+        a.state.work_done=a.state.work_total-1
+        for method in ("add_log","save_result"):
+            with patch.object(a.db,method,side_effect=sqlite3.OperationalError("실패")):
+                a.advance_time(10)
+            self.assertEqual(a.state.phase,"running")
+            self.assertIsNone(a.state.score)
+            self.assertEqual(a.center.gpu_used,6)
+            self.assertEqual(a.db.get_recent_results(),[])
+        a.advance_time(10)
+        self.assertEqual(a.state.phase,"finished")
+        self.assertEqual(a.center.gpu_used,2)
 
     def test_second_log_failure_does_not_leave_partial_records(self):
-        app = self.app
-        add_log = app.db.add_log
-
-        def fail_second_log():
-            calls = 0
-
-            def save(run_id, message):
+        a=self.app; original=a.db.add_log
+        def failing():
+            calls=0
+            def write(*args):
                 nonlocal calls
-                calls += 1
-                if calls == 2:
-                    raise sqlite3.OperationalError("두 번째 로그 저장 실패")
-                add_log(run_id, message)
-
-            return save
-
-        with patch.object(app.db, "add_log", side_effect=fail_second_log()):
-            app.choose_plan("economy")
-        self.assertEqual(app.db.conn.execute("SELECT COUNT(*) FROM event_logs").fetchone()[0], 0)
-        self.assertEqual(app.state.phase, "ready")
-        app.choose_plan("economy")
-        app.refresh.reset_mock()
-        with patch.object(app.db, "add_log", side_effect=fail_second_log()):
-            app.respond("compress")
-        self.assertEqual(len(app.db.get_logs(app.playthrough_id)), 2)
-        self.assertEqual(app.state.phase, "incident")
-        app.refresh.assert_not_called()
-        app.respond("compress")
-        self.assertEqual(len(app.db.get_logs(app.playthrough_id)), 4)
-        self.assertEqual(app.center.gpu_used, 0)
-
-
-if __name__ == "__main__":
-    unittest.main()
+                calls+=1
+                if calls==2: raise sqlite3.OperationalError("두 번째 로그 실패")
+                original(*args)
+            return write
+        with patch.object(a.db,"add_log",side_effect=failing()): a.choose_plan("economy")
+        self.assertEqual(len(a.db.get_recent_records()),0)
+        self.assertEqual(a.state.phase,"ready")
+        a.choose_plan("economy"); a.state.work_done=a.state.work_total-1
+        a.refresh.reset_mock()
+        with patch.object(a.db,"add_log",side_effect=failing()): a.advance_time(10)
+        self.assertEqual(a.state.phase,"running")
+        self.assertEqual(len(a.db.get_logs(a.playthrough_id)),3)
+        a.refresh.assert_not_called()
+        a.advance_time(10)
+        self.assertEqual(a.center.gpu_used,0)

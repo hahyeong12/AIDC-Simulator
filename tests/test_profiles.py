@@ -1,6 +1,7 @@
 """고객별 요구량과 선택에 따른 실제 결과를 검증합니다."""
 import unittest
 
+from test_game import finish_state
 from game import CUSTOMER_PLANS, DataCenter, GameState, plans_for
 
 
@@ -19,7 +20,7 @@ class CustomerProfileTests(unittest.TestCase):
                     state = GameState(center=center, country=country)
                     state.choose_plan(mode)
                     self.assertEqual((state.gpu_used, state.power_used, state.network_needed), values)
-                    state.resolve("reroute")
+                    state.trigger_incident(); state.resolve("reroute"); finish_state(state)
                     self.assertEqual((center.gpu_used, center.power_used), (1, 1))
 
     def test_same_response_has_customer_specific_outcome(self):
@@ -27,7 +28,7 @@ class CustomerProfileTests(unittest.TestCase):
         for country in CUSTOMER_PLANS:
             state = GameState(country=country)
             state.choose_plan("economy")
-            state.resolve("compress")
+            state.trigger_incident(); state.resolve("compress"); finish_state(state)
             results.append(state.succeeded)
         self.assertEqual(results, [True, True, False])
 
@@ -38,7 +39,7 @@ class CustomerProfileTests(unittest.TestCase):
                     with self.subTest(country=country, mode=mode, response=response):
                         state = GameState(country=country)
                         state.choose_plan(mode)
-                        state.resolve(response)
+                        state.trigger_incident(); state.resolve(response); finish_state(state)
                         self.assertTrue(0 <= state.score <= 100)
                         self.assertEqual((state.center.gpu_used, state.center.power_used), (0, 0))
 

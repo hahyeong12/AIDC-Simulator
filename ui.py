@@ -1,75 +1,67 @@
-"""표준 Tkinter로 그리는 관제실 위젯. 게임 상태를 변경하지 않습니다."""
-import math
+"""Tkinter 관제실의 공통 위젯과 별도 메시지 창."""
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
+from tkinter.scrolledtext import ScrolledText
+from game import game_time
 
-BG = "#080f1d"
-PANEL = "#101c2e"
-RAISED = "#17273d"
-BORDER = "#263b54"
-TEXT = "#e3edf8"
-MUTED = "#91a7c1"
-CYAN = "#38d9d0"
-BLUE = "#6d9fff"
-GREEN = "#66e0a3"
-RED = "#ff6b79"
-AMBER = "#ffbf69"
-FONT = "Malgun Gothic"
-CUSTOMER_COLORS = (CYAN, BLUE, "#c5a1ff", AMBER)
+BG, PANEL, RAISED, BORDER = '#080f1d', '#101c2e', '#17273d', '#263b54'
+TEXT, MUTED, CYAN, BLUE = '#e3edf8', '#91a7c1', '#38d9d0', '#6d9fff'
+GREEN, RED, AMBER = '#66e0a3', '#ff6b79', '#ffbf69'
+FONT = 'Malgun Gothic'
+CUSTOMER_COLORS = (CYAN, BLUE, '#c5a1ff', AMBER)
+
+
+def label(parent, text='', size=10, color=TEXT, bold=False, **kwargs):
+    return tk.Label(parent, text=text, bg=parent.cget('bg'), fg=color,
+                    font=(FONT, size, 'bold' if bold else 'normal'), **kwargs)
 
 
 def status_of(state):
-    if state.phase == "ready":
-        return "○ 요청 대기", MUTED
-    if state.phase == "incident":
-        return "! 회선 장애 · 대응 필요", RED
-    if state.response == "abandon":
-        return "■ 종료로 중단 · 0점", AMBER
-    if state.succeeded:
-        return f"✓ 미션 성공 · {state.score}점", GREEN
-    return f"× 처리 실패 · {state.score}점", RED
+    names = {'ready': ('미배정', MUTED), 'accepted': ('수락 · 배정 대기', BLUE),
+             'running': ('정상 실행 중', CYAN), 'incident': ('! 네트워크 장애', RED),
+             'paused': ('일시 중단 · 추가 대응 필요', AMBER), 'recovering': ('복구 / 재처리 준비 중', BLUE)}
+    if state.phase in names:
+        return names[state.phase]
+    return (f'완료 · {state.score}점', GREEN) if state.succeeded else (f'실패 · {state.score}점', RED)
 
 
-def label(parent, text="", size=10, color=TEXT, bold=False, **kwargs):
-    return tk.Label(parent, text=text, bg=parent.cget("bg"), fg=color,
-                    font=(FONT, size, "bold" if bold else "normal"), **kwargs)
+def request_status_of(run):
+    status = run.request['status']
+    if run.terms.get('expired'):
+        return '미처리 · 기한 만료', RED
+    if status in ('operating', 'completed') or run.state.phase == 'accepted':
+        return status_of(run.state)
+    return {'new': ('신규 요청', CYAN), 'review': ('검토 중', BLUE),
+            'waiting': ('대기 · 미점유', AMBER), 'rejected': ('거절', MUTED)}[status]
 
 
 class ActionButton(tk.Button):
     def __init__(self, parent, text, command, accent=CYAN, **kwargs):
         super().__init__(parent, text=text, command=command, bg=RAISED, fg=accent,
-                         activebackground=BORDER, activeforeground=TEXT,
-                         disabledforeground=MUTED, relief="flat", bd=0,
-                         highlightthickness=1, highlightbackground=BORDER,
-                         font=(FONT, 10, "bold"), padx=12, pady=10,
-                         cursor="hand2", **kwargs)
-        self.bind("<Enter>", lambda _: self.configure(bg=BORDER)
-                  if self.cget("state") != "disabled" else None)
-        self.bind("<Leave>", lambda _: self.configure(bg=RAISED))
+                         activebackground=BORDER, activeforeground=TEXT, disabledforeground=MUTED,
+                         relief='flat', bd=0, highlightthickness=1, highlightbackground=BORDER,
+                         font=(FONT, 10, 'bold'), padx=10, pady=7, cursor='hand2', **kwargs)
+        self.bind('<Enter>', lambda _: self.configure(bg=BORDER) if self.cget('state') != 'disabled' else None)
+        self.bind('<Leave>', lambda _: self.configure(bg=RAISED))
 
 
 class Tooltip:
     def __init__(self, widget, text):
-        self.widget, self.text = widget, text
-        self.timer = self.window = None
-        widget.bind("<Enter>", self.schedule, add="+")
-        widget.bind("<Leave>", self.hide, add="+")
-        widget.bind("<ButtonPress>", self.hide, add="+")
-        widget.bind("<Destroy>", self.hide, add="+")
-
-    def schedule(self, _event):
+        self.widget, self.text, self.timer, self.window = widget, text, None, None
+        widget.bind('<Enter>', self.schedule, add='+')
+        widget.bind('<Leave>', self.hide, add='+')
+        widget.bind('<Destroy>', self.hide, add='+')
+    def schedule(self, _=None):
         self.hide()
-        self.timer = self.widget.after(550, self.show)
-
+        self.timer = self.widget.after(500, self.show)
     def show(self):
         self.timer = None
         self.window = tk.Toplevel(self.widget)
         self.window.overrideredirect(True)
-        self.window.geometry(f"+{self.widget.winfo_rootx()}+{self.widget.winfo_rooty() + 30}")
+        self.window.geometry(f'+{self.widget.winfo_rootx()}+{self.widget.winfo_rooty()+28}')
         tk.Label(self.window, text=self.text, bg=BORDER, fg=TEXT, wraplength=280,
-                 font=(FONT, 10), padx=12, pady=8).pack()
-
-    def hide(self, _event=None):
+                 font=(FONT, 10), padx=10, pady=8).pack()
+    def hide(self, _=None):
         if self.timer is not None:
             self.widget.after_cancel(self.timer)
             self.timer = None
@@ -78,188 +70,259 @@ class Tooltip:
             self.window = None
 
 
-class ScrollArea(tk.Frame):
-    """작은 창에서는 전체 화면을 스크롤하여 행동 버튼까지 접근합니다."""
-    def __init__(self, parent):
+class TextDialog(tk.Toplevel):
+    def __init__(self, parent, title, text):
         super().__init__(parent, bg=BG)
-        self.canvas = tk.Canvas(self, bg=BG, bd=0, highlightthickness=0)
-        bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=bar.set)
-        bar.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.content = tk.Frame(self.canvas, bg=BG)
-        self.item = self.canvas.create_window(0, 0, window=self.content, anchor="nw")
-        self.content.bind("<Configure>", lambda _: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self.item, width=e.width))
-        # toplevel 바인딩은 자식 위젯에서도 동작하며 로그/기록의 자체 스크롤은 존중합니다.
-        parent.winfo_toplevel().bind("<MouseWheel>", self._wheel, add="+")
-
-    def _wheel(self, event):
-        if event.widget.winfo_class() in ("Text", "Treeview"):
-            return
-        if self.content.winfo_height() > self.canvas.winfo_height():
-            self.canvas.yview_scroll(-int(event.delta / 120), "units")
+        self.title(title)
+        self.geometry('800x510')
+        self.minsize(520, 330)
+        box = ScrolledText(self, wrap='word', bg=PANEL, fg=TEXT, font=(FONT, 11), padx=18, pady=15)
+        box.pack(fill='both', expand=True, padx=10, pady=10)
+        box.insert('1.0', text)
+        box.configure(state='disabled')
+        self.text = box
 
 
-class MissionCard(tk.Frame):
-    def __init__(self, parent, run, color, command):
-        super().__init__(parent, bg=PANEL, highlightthickness=1, highlightbackground=BORDER,
-                         padx=13, pady=11, cursor="hand2")
-        self.run, self.color = run, color
+class MessageDialog(tk.Toplevel):
+    """단계별 업무 메신저. 전체 보기와 즉시 표시를 지원합니다."""
+    def __init__(self, parent, company, country, steps, animate=True, message_kind='업무 메시지'):
+        super().__init__(parent, bg=BG)
+        self.title(f'AIDC LINK | {company} · {country}')
+        self.geometry('760x470')
+        self.minsize(610, 390)
+        self.steps, self.index, self.animate = steps, 0, animate
+        self.message_kind = message_kind
+        self.timer, self.shown = None, 0
         self.columnconfigure(0, weight=1)
-        self.country = label(self, run.mission["country"].upper(), 9, color, True)
-        self.country.grid(row=0, column=0, sticky="w")
-        label(self, run.mission["company_name"], 12, bold=True).grid(row=1, column=0, sticky="w", pady=(3, 1))
-        label(self, run.mission["title"], 9, MUTED, wraplength=220, justify="left").grid(row=2, column=0, sticky="w")
-        self.requirements = label(self, size=9, color=MUTED, justify="left")
-        self.requirements.grid(row=3, column=0, sticky="w", pady=(7, 4))
-        self.status = label(self, size=9, bold=True)
-        self.status.grid(row=4, column=0, sticky="w")
-        for widget in (self, *self.winfo_children()):
-            widget.bind("<Button-1>", lambda _: command())
-            widget.bind("<Enter>", lambda _: self.configure(highlightbackground=color))
-            widget.bind("<Leave>", lambda _: self.configure(
-                highlightbackground=color if self.selected else BORDER))
-        self.selected = False
-
-    def refresh(self, selected):
-        self.selected = selected
-        state = self.run.state
-        if state.phase == "ready":
-            p, e = state.plans["performance"], state.plans["economy"]
-            text = f"고성능  GPU {p['gpu']} / 전력 {p['power']} / 망 {p['network']}\n절약형  GPU {e['gpu']} / 전력 {e['power']} / 망 {e['network']}"
+        self.rowconfigure(2, weight=1)
+        label(self, f'AIDC LINK   /   {company} · {country}', 14, CYAN, True).grid(row=0, sticky='w', padx=20, pady=(18, 10))
+        self.speaker = label(self, size=11, bold=True, anchor='w')
+        self.speaker.grid(row=1, sticky='ew', padx=20)
+        self.bubble = ScrolledText(self, wrap='word', font=(FONT, 12), bg=PANEL, fg=TEXT,
+                                   bd=0, padx=18, pady=18, height=7)
+        self.bubble.grid(row=2, sticky='nsew', padx=20, pady=10)
+        self.page = label(self, color=MUTED)
+        self.page.grid(row=3, sticky='w', padx=20)
+        buttons = tk.Frame(self, bg=BG)
+        buttons.grid(row=4, sticky='ew', padx=20, pady=(10, 18))
+        self.previous_button = ActionButton(buttons, '◀ 이전', self.previous)
+        self.previous_button.pack(side='left', padx=(0, 6))
+        self.next_button = ActionButton(buttons, '다음 ▶', self.next)
+        self.next_button.pack(side='left', padx=6)
+        self.reveal_button = ActionButton(buttons, '즉시 표시', self.reveal)
+        self.reveal_button.pack(side='left', padx=6)
+        ActionButton(buttons, '전체 보기', self.show_all).pack(side='left', padx=6)
+        self.skip_button = ActionButton(buttons, '건너뛰기', self.skip)
+        self.skip_button.pack(side='right')
+        self.bind('<Destroy>', self._cancel, add='+')
+        self.render()
+    def _cancel(self, event=None):
+        if event is not None and event.widget is not self:
+            return
+        if self.timer is not None:
+            self.after_cancel(self.timer)
+            self.timer = None
+    def render(self):
+        self._cancel()
+        speaker, self.full_text = self.steps[self.index]
+        self.speaker.configure(text=speaker)
+        self.page.configure(text=f'{self.index+1} / {len(self.steps)}   ·   {self.message_kind} · 과거 내용은 운영실 [대화 기록]')
+        self.previous_button.configure(state='normal' if self.index else 'disabled')
+        self.next_button.configure(text='확인 · 운영실로' if self.index == len(self.steps)-1 else '다음 ▶')
+        self.shown = 0
+        self.reveal_button.configure(state='normal')
+        self._type() if self.animate else self.reveal()
+    def _set_text(self, text):
+        self.bubble.configure(state='normal')
+        self.bubble.delete('1.0', 'end')
+        self.bubble.insert('end', text)
+        self.bubble.configure(state='disabled')
+    def _type(self):
+        self.timer = None
+        self.shown = min(len(self.full_text), self.shown+3)
+        self._set_text(self.full_text[:self.shown])
+        if self.shown < len(self.full_text):
+            self.timer = self.after(18, self._type)
         else:
-            suffix = "점유 중" if state.phase == "incident" else "반환 완료"
-            text = f"{state.plans[state.plan]['label']}\nGPU {state.gpu_used} / 전력 {state.power_used} · {suffix}"
-        self.requirements.configure(text=text)
-        name, color = status_of(state)
-        self.status.configure(text=name, fg=color)
-        self.configure(highlightbackground=self.color if selected else BORDER,
-                       highlightthickness=2 if selected else 1)
+            self.reveal_button.configure(state='disabled')
+    def reveal(self):
+        self._cancel()
+        self.shown = len(self.full_text)
+        self._set_text(self.full_text)
+        self.reveal_button.configure(state='disabled')
+    def skip(self):
+        self.index = len(self.steps)-1
+        self.render()
+        self.reveal()
+    def next(self):
+        if self.shown < len(self.full_text):
+            self.reveal()
+        elif self.index < len(self.steps)-1:
+            self.index += 1
+            self.render()
+        else:
+            self.destroy()
+    def previous(self):
+        if self.index:
+            self.index -= 1
+            self.render()
+    def show_all(self):
+        return TextDialog(self, '업무 메시지 전체 보기', '\n\n'.join(f'{s}\n{t}' for s, t in self.steps))
 
 
 class NetworkMap(tk.Canvas):
     def __init__(self, parent, session, select):
-        super().__init__(parent, bg=BG, highlightthickness=0, width=300, height=310)
-        self.session, self.select = session, select
-        self.tick = 0
-        self.timer = None
-        self.bind("<Configure>", lambda _: self.redraw())
-
+        super().__init__(parent, bg=BG, highlightthickness=0, width=300, height=220)
+        self.session, self.select, self.tick, self.timer = session, select, 0, None
+        self.bind('<Configure>', lambda _: self.redraw())
     def start(self):
         self.animate()
-
     def stop(self):
         if self.timer is not None:
             self.after_cancel(self.timer)
             self.timer = None
-
     def animate(self):
-        self.tick = (self.tick + 1) % 32
+        self.tick = (self.tick+1) % 32
         self.redraw()
-        self.timer = self.after(90, self.animate)
-
+        self.timer = self.after(100, self.animate)
     def redraw(self):
-        self.delete("all")
-        w, h = max(300, self.winfo_width()), max(260, self.winfo_height())
-        for x in range(16, int(w), 28):
-            for y in range(14, int(h), 28):
-                self.create_oval(x, y, x+1, y+1, fill=BORDER, outline="")
-        cx, cy = w * .5, h * .51
-        positions = ((.22, .18), (.78, .18), (.5, .88))
-        for i, (mission_id, run) in enumerate(self.session.runs.items()):
-            if i < 3:
-                px, py = positions[i]
-            else:
-                angle = 2 * math.pi * i / len(self.session.runs)
-                px, py = .5 + .35 * math.cos(angle), .5 + .36 * math.sin(angle)
-            x, y = w * px, h * py
-            state = run.state
-            _, color = status_of(state)
-            backup = state.response == "reroute"
-            line_color = RED if state.phase == "incident" or backup else GREEN if state.succeeded else BORDER
-            self.create_line(cx, cy, x, y, fill=line_color, width=2,
-                             dash=(5, 5) if state.phase == "incident" or backup else ())
-            if backup:
-                bx, by = (cx+x)/2 + 45, (cy+y)/2
-                self.create_line(cx, cy, bx, by, x, y, fill=CYAN, width=3, smooth=True,
-                                 dash=(7, 4), dashoffset=self.tick, tags="backup")
-                self.create_text(bx, by+12, text="백업 +4", fill=CYAN, font=(FONT, 8))
-            if state.phase == "incident":
-                t = self.tick / 32
+        self.delete('all')
+        w, h = max(260, self.winfo_width()), max(180, self.winfo_height())
+        cx, cy = w*.5, h*.50
+        for x in range(15, int(w), 30):
+            for y in range(15, int(h), 30):
+                self.create_oval(x, y, x+1, y+1, fill=BORDER, outline='')
+        visible = {}
+        for rid, run in self.session.runs.items():
+            if run.state.phase not in ('ready', 'accepted'):
+                visible[run.mission['id']] = (rid, run)
+        if not visible:
+            self.create_text(cx, h*.84, text='운영할 고객 요청을 선택하세요', fill=MUTED, font=(FONT, 10), tags='empty-network')
+        for i, (rid, run) in enumerate(visible.values()):
+            x, y = ((w*.22, h*.17), (w*.78, h*.17), (w*.5, h*.84))[i % 3]
+            s = run.state
+            caption, color = status_of(s)
+            fault = s.phase in ('incident', 'paused')
+            self.create_line(cx, cy, x, y, fill=RED if fault else color, width=2, dash=(5, 4) if fault else ())
+            if s.response == 'reroute':
+                self.create_line(cx, cy, (cx+x)/2+35, (cy+y)/2, x, y, fill=CYAN,
+                                 width=2, smooth=True, dash=(6, 4), dashoffset=self.tick, tags='backup')
+            if s.phase in ('running', 'incident', 'recovering'):
+                t = self.tick/32
                 dx, dy = cx+(x-cx)*t, cy+(y-cy)*t
-                self.create_oval(dx-3, dy-3, dx+3, dy+3, fill=RED, outline="", tags="packet")
-                self.create_text((cx+x)/2, (cy+y)/2-10,
-                                 text="!  가용 2", fill=RED if self.tick % 12 < 8 else AMBER,
-                                 font=(FONT, 9, "bold"))
-            elif state.phase == "finished":
-                hint = f"필요 {state.network_needed} / 가용 {state.network_available}"
-                self.create_text((cx+x)/2, (cy+y)/2-10, text=hint, fill=color, font=(FONT, 8))
-            tag = f"mission-{mission_id}"
-            self.create_rectangle(x-54, y-25, x+54, y+25, fill=PANEL,
-                                  outline=color if mission_id == self.session.selected_id else BORDER,
-                                  width=2, tags=tag)
-            self.create_text(x, y-6, text=run.mission["country"], fill=TEXT, font=(FONT, 10, "bold"), tags=tag)
-            caption = "대기" if state.phase == "ready" else "! 장애" if state.phase == "incident" else "✓ 성공" if state.succeeded else "× 실패"
-            self.create_text(x, y+11, text=caption, fill=color, font=(FONT, 8), tags=tag)
-            self.tag_bind(tag, "<Button-1>", lambda _, mid=mission_id: self.select(mid))
-            self.tag_bind(tag, "<Enter>", lambda _: self.configure(cursor="hand2"))
-            self.tag_bind(tag, "<Leave>", lambda _: self.configure(cursor=""))
-        self.create_oval(cx-48, cy-48, cx+48, cy+48, fill=PANEL, outline=CYAN, width=2)
-        self.create_oval(cx-41, cy-41, cx+41, cy+41, outline=BORDER)
-        self.create_text(cx, cy-10, text="ULSAN", fill=CYAN, font=(FONT, 14, "bold"))
-        self.create_text(cx, cy+12, text="AI DATA CENTER", fill=TEXT, font=(FONT, 8))
+                self.create_oval(dx-3, dy-3, dx+3, dy+3, fill=color, outline='', tags='packet')
+            tag = f'request-{rid}'
+            self.create_rectangle(x-63, y-24, x+63, y+24, fill=PANEL, outline=color, width=2, tags=tag)
+            self.create_text(x, y-7, text=run.mission['country'], fill=TEXT, font=(FONT, 11, 'bold'), tags=tag)
+            progress = getattr(s, 'progress', 0)
+            self.create_text(x, y+11, text=f'{caption.split(" · ")[0]} {progress:.0f}%', fill=color, font=(FONT, 9), tags=tag)
+            self.tag_bind(tag, '<Button-1>', lambda _, key=rid: self.select(key))
+        self.create_oval(cx-43, cy-43, cx+43, cy+43, fill=PANEL, outline=CYAN, width=2)
+        self.create_text(cx, cy-8, text='ULSAN', fill=CYAN, font=(FONT, 14, 'bold'))
+        self.create_text(cx, cy+13, text='AI DATA CENTER', fill=TEXT, font=(FONT, 8))
 
 
 class ResourcePanel(tk.Frame):
     def __init__(self, parent, session):
-        super().__init__(parent, bg=PANEL, padx=15, pady=14)
-        self.session = session
-        label(self, "03  /  자원 관제", 12, bold=True).pack(anchor="w")
+        super().__init__(parent, bg=PANEL, padx=12, pady=10)
+        self.session, self.preview_plan = session, 'performance'
+        label(self, '자원 관제', 12, bold=True).pack(anchor='w')
         self.gpu_label = label(self, size=11, bold=True)
-        self.gpu_label.pack(anchor="w", pady=(20, 4))
-        Tooltip(self.gpu_label, "GPU는 AI 연산을 처리하는 장치입니다. 색이 채워진 블록은 고객에게 배정되어 있습니다.")
-        self.rack = tk.Canvas(self, bg=PANEL, width=200, height=80, highlightthickness=0)
-        self.rack.pack(fill="x")
-        self.rack.bind("<Configure>", lambda _: self.refresh())
-        self.power_label = label(self, size=11, bold=True)
-        self.power_label.pack(anchor="w", pady=(12, 5))
-        self.power = tk.Canvas(self, bg=PANEL, width=200, height=14, highlightthickness=0)
-        self.power.pack(fill="x")
-        self.power.bind("<Configure>", lambda _: self.refresh())
-        self.free = label(self, color=CYAN, size=9)
-        self.free.pack(anchor="w", pady=(8, 18))
-        label(self, "고객별 점유량", 10, bold=True).pack(anchor="w")
-        self.owners = label(self, size=9, justify="left", anchor="w")
-        self.owners.pack(fill="x", pady=(8, 0))
-        label(self, "작업 완료 → 해당 자원만 반환\n회선 가용량은 고객별로 독립 관리", 9,
-              MUTED, justify="left").pack(anchor="w", pady=(18, 0))
-
-    def refresh(self):
-        center = self.session.center
-        active = [(i, run) for i, run in enumerate(self.session.runs.values()) if run.state.phase == "incident"]
-        self.gpu_label.configure(text=f"GPU 서버   {center.gpu_used:02d} / {center.gpu_total:02d}")
-        self.rack.delete("all")
-        colors = [CUSTOMER_COLORS[i % len(CUSTOMER_COLORS)] for i, run in active for _ in range(run.state.gpu_used)]
+        self.gpu_label.pack(anchor='w', pady=(4, 2))
+        self.rack = tk.Canvas(self, bg=PANEL, width=220, height=48, highlightthickness=0)
+        self.rack.pack(fill='x')
+        self.rack.bind('<Configure>', lambda _: self.refresh())
+        self.power_label = label(self, size=10)
+        self.power_label.pack(anchor='w', pady=(3, 2))
+        self.power = tk.Canvas(self, bg=PANEL, width=220, height=12, highlightthickness=0)
+        self.power.pack(fill='x')
+        self.power.bind('<Configure>', lambda _: self.refresh())
+        self.free = label(self, color=CYAN, size=10)
+        # 가용량은 위 두 자원 제목에 상시 표시하며 중복 줄을 늘리지 않습니다.
+        self.owners = label(self, size=9, justify='left', wraplength=230, anchor='w')
+        self.owners.pack(fill='x', pady=(3, 3))
+        label(self, '선택 모드 배정 미리보기', 10, bold=True).pack(anchor='w')
+        self.preview_bar = tk.Canvas(self, bg=PANEL, width=220, height=16, highlightthickness=0)
+        self.preview_bar.pack(fill='x', pady=(3, 2))
+        self.preview = label(self, size=10, justify='left', wraplength=230, anchor='w')
+        self.preview.pack(fill='x')
+    def refresh(self, plan=None):
+        if plan is not None:
+            self.preview_plan = plan
+        c = self.session.center
+        active = [r for r in self.session.runs.values() if r.state.phase in ('running', 'incident', 'paused', 'recovering')]
+        colors = []
+        for run in active:
+            index = list(self.session.missions).index(run.mission['id'])
+            colors.extend([CUSTOMER_COLORS[index % 4]]*run.state.gpu_used)
+        self.gpu_label.configure(text=f'GPU  사용 {c.gpu_used}  /  가용 {c.available_gpu()}  /  총 {c.gpu_total}')
+        self.rack.delete('all')
         width = max(180, self.rack.winfo_width())
-        step = width / 5
-        for index in range(center.gpu_total):
-            x, y = (index % 5)*step, (index // 5)*39
-            color = colors[index] if index < len(colors) else BORDER
-            self.rack.create_rectangle(x+2, y+2, x+step-4, y+33, fill=RAISED, outline=color, width=2)
-            self.rack.create_rectangle(x+7, y+8, x+step-9, y+12, fill=color, outline="")
-            self.rack.create_oval(x+8, y+21, x+12, y+25, fill=color, outline="")
-        self.power_label.configure(text=f"전력   {center.power_used:02d} / {center.power_total:02d}")
-        self.power.delete("all")
+        for i in range(c.gpu_total):
+            x, y = i%5*width/5, i//5*24
+            color = colors[i] if i < len(colors) else BORDER
+            self.rack.create_rectangle(x+1, y+1, x+width/5-4, y+21, fill=color, outline=MUTED if i >= c.gpu_used else color, tags='gpu-block')
+        self.power_label.configure(text=f'전력  사용 {c.power_used} / 가용 {c.available_power()} / 총 {c.power_total}')
+        self.power.delete('all')
         width = max(180, self.power.winfo_width())
-        self.power.create_rectangle(0, 1, width, 13, fill=BORDER, outline="")
-        offset = 0
-        for i, run in active:
-            end = offset + run.state.power_used / center.power_total * width
-            self.power.create_rectangle(offset, 1, end, 13, fill=CUSTOMER_COLORS[i % len(CUSTOMER_COLORS)], outline="")
-            offset = end
-        self.free.configure(text=f"배정 가능  GPU {center.available_gpu()}개 · 전력 {center.available_power()}단위",
-                            fg=AMBER if min(center.available_gpu(), center.available_power()) == 0 else CYAN)
-        self.owners.configure(text="\n\n".join(
-            f"{run.mission['country']}  ·  GPU {run.state.gpu_used} / 전력 {run.state.power_used}"
-            for _, run in active) or "현재 배정된 작업이 없습니다.")
+        self.power.create_rectangle(0, 0, width, 12, fill=BORDER, outline='')
+        self.power.create_rectangle(0, 0, width*c.power_used/c.power_total, 12, fill=CYAN, outline='')
+        self.free.configure(text=f'배정 가능 GPU {c.available_gpu()}개 · 전력 {c.available_power()}단위')
+        countries = {'싱가포르':'SG','일본':'JP','미국':'US'}
+        owners = ' · '.join(f'{countries.get(r.mission["country"], r.mission["country"])} {r.state.gpu_used}/{r.state.power_used}' for r in active)
+        self.owners.configure(text='고객별 점유 GPU/전력\n'+owners if active else '현재 점유 작업 없음')
+        s = self.session.current.state
+        p = s.plans[self.preview_plan]
+        dg, dp = c.available_gpu()-p['gpu'], c.available_power()-p['power']
+        fits = min(dg, dp) >= 0
+        self.preview.configure(text=f'{p["label"]} · GPU {p["gpu"]} / 전력 {p["power"]}\n'
+                               f'GPU {"잔여" if dg >= 0 else "부족"} {abs(dg)} · '
+                               f'전력 {"잔여" if dp >= 0 else "부족"} {abs(dp)}', fg=GREEN if fits else AMBER)
+        self.preview_bar.delete('all')
+        width = max(180, self.preview_bar.winfo_width())
+        self.preview_bar.create_rectangle(0, 0, width, 14, fill=BORDER, outline='')
+        self.preview_bar.create_rectangle(0, 0, width*min(c.gpu_total, c.gpu_used+p['gpu'])/c.gpu_total, 14,
+                                          fill=GREEN if fits else AMBER, outline='')
+        if s.allocated:
+            self.preview.configure(text=f'현재 작업 GPU {s.gpu_used} / 전력 {s.power_used}\n진행 {s.progress:.0f}% · 잔여 약 {s.remaining_minutes}분', fg=CYAN)
+            self.preview_bar.delete('all')
+            self.preview_bar.create_rectangle(0, 0, width, 14, fill=BORDER, outline='')
+            self.preview_bar.create_rectangle(0, 0, width*s.progress/100, 14, fill=CYAN, outline='')
+        if s.phase != 'finished' and self.session.current.request['status'] != 'rejected':
+            estimates = []
+            for key, short in (('performance','고성능'),('economy','절약형')):
+                duration = s.estimate_minutes(key)
+                estimates.append(f'{short} {duration}분 → {game_time(self.session.minute+duration)}')
+            t = self.session.current.terms
+            selected = s.plan if s.allocated else self.preview_plan
+            outcome = ('기한 내 예상' if self.session.minute+s.estimate_minutes(selected) <= t['due']
+                       else '기한 초과 예상') if t else '기존 요청 · 기한 평가 제외'
+            self.preview.configure(text=self.preview.cget('text')+'\n'+'\n'.join(estimates)+'\n'+outcome,
+                                   fg=RED if outcome=='기한 초과 예상' else self.preview.cget('fg'))
+
+
+class RejectionDialog(tk.Toplevel):
+    def __init__(self, parent, submit):
+        super().__init__(parent, bg=PANEL)
+        self.title('고객 요청 거절')
+        self.geometry('520x310')
+        self.minsize(450, 280)
+        self.transient(parent)
+        self.submit = submit
+        label(self, '거절 사유를 선택해 주세요', 13, bold=True).pack(anchor='w', padx=18, pady=15)
+        from session import REJECTION_REASONS
+        self.reason = tk.StringVar()
+        ttk.Combobox(self, textvariable=self.reason, values=REJECTION_REASONS, state='readonly').pack(fill='x', padx=18)
+        label(self, '기타 사유는 설명 필수 · 거절은 수행 실패와 별도 기록', 10, MUTED).pack(anchor='w', padx=18, pady=8)
+        self.note = tk.Text(self, height=3, bg=BG, fg=TEXT, insertbackground=TEXT, font=(FONT, 10), bd=0)
+        self.note.pack(fill='both', expand=True, padx=18, pady=8)
+        self.confirm_button = ActionButton(self, '거절 기록 저장', self.confirm, accent=AMBER)
+        self.confirm_button.pack(fill='x', padx=18, pady=12)
+        self.grab_set()
+    def confirm(self):
+        reason, note = self.reason.get(), self.note.get('1.0', 'end').strip()
+        if not reason or (reason == '기타 사유' and not note):
+            messagebox.showwarning('거절 사유 필요', '사유를 선택하고 기타 사유라면 설명을 입력해 주세요.', parent=self)
+            return
+        if self.submit(f'{reason}: {note}' if note else reason):
+            self.destroy()
