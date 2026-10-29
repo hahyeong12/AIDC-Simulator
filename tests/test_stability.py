@@ -155,47 +155,44 @@ class DatabaseTests(unittest.TestCase):
 
 
 class AppFlowTests(unittest.TestCase):
-    """창을 띄우지 않고 실제 게임 규칙과 SQLite로 버튼 처리 흐름을 검증합니다."""
+    """실제 세션과 임시 SQLite로 GUI 버튼 처리 흐름을 검증합니다."""
     def setUp(self):
+        from session import GameSession
         self.app = SimulatorApp.__new__(SimulatorApp)
+        self.app.root = Mock()
         self.app.db = Database(":memory:")
         self.addCleanup(self.app.db.close)
-        self.app.center = DataCenter()
-        self.app.state = GameState(center=self.app.center)
-        self.app.mission = self.app.db.get_mission()
-        self.app.playthrough_id = None
-        self.app.other_customer_active = False
-        for name in ("append_story", "update_status", "render_actions", "refresh_history",
-                     "other_customer_button", "story", "status_var", "mission_list"):
-            setattr(self.app, name, Mock())
+        self.app.session = GameSession(self.app.db)
+        self.app.center = self.app.session.center
+        self.app.refresh = Mock()
         self.dialogs = patch("main.messagebox")
         self.messages = self.dialogs.start()
         self.addCleanup(self.dialogs.stop)
 
-    def test_external_customer_start_finish_and_new_mission(self):
+    def test_other_mission_start_finish_and_new_mission(self):
         app = self.app
-        app.toggle_other_customer()
+        app.select_mission(2)
+        app.choose_plan("economy")
+        app.select_mission(1)
         app.choose_plan("economy")
         app.respond("compress")
         app.new_mission()
         self.assertIs(app.state.center, app.center)
-        self.assertTrue(app.other_customer_active)
-        self.assertEqual(app.center.gpu_used, 4)
-        app.toggle_other_customer()
-        app.choose_plan("performance")
-        app.toggle_other_customer()  # 잔여 자원이 부족하므로 외부 고객 시작 거부
-        self.assertFalse(app.other_customer_active)
+        self.assertEqual((app.center.gpu_used, app.center.power_used), (2, 2))
+        app.select_mission(2)
         app.respond("compress")
         self.assertEqual((app.center.gpu_used, app.center.power_used), (0, 0))
-        self.assertEqual([row["status"] for row in app.db.get_recent_results()], ["실패", "성공"])
+        self.assertEqual([row["status"] for row in app.db.get_recent_results()], ["성공", "성공"])
         self.assertEqual(len(app.db.get_logs(app.playthrough_id)), 4)
 
-    def test_external_customer_can_finish_during_mission(self):
+    def test_other_customer_can_finish_during_mission(self):
         app = self.app
-        app.toggle_other_customer()
         app.choose_plan("economy")
-        app.toggle_other_customer()
+        app.select_mission(2)
+        app.choose_plan("economy")
+        app.respond("compress")
         self.assertEqual((app.center.gpu_used, app.center.power_used), (4, 4))
+        app.select_mission(1)
         app.respond("ignore")
         self.assertEqual((app.center.gpu_used, app.center.power_used), (0, 0))
 
@@ -211,21 +208,25 @@ class AppFlowTests(unittest.TestCase):
 
     def test_start_save_failure_restores_state_and_allows_retry(self):
         app = self.app
-        app.toggle_other_customer()
+        app.select_mission(2)
+        app.choose_plan("economy")
+        app.select_mission(1)
         for method in ("create_playthrough", "add_log"):
             with self.subTest(method=method):
                 with patch.object(app.db, method, side_effect=sqlite3.OperationalError("저장 실패")):
                     app.choose_plan("economy")
                 self.assertEqual(app.state.phase, "ready")
                 self.assertIsNone(app.playthrough_id)
-                self.assertEqual((app.center.gpu_used, app.center.power_used), (4, 4))
-                self.assertEqual(app.db.conn.execute("SELECT COUNT(*) FROM playthroughs").fetchone()[0], 0)
+                self.assertEqual((app.center.gpu_used, app.center.power_used), (2, 2))
+                self.assertEqual(len(app.db.get_recent_records()), 1)
         app.choose_plan("economy")
         self.assertEqual(app.state.phase, "incident")
 
     def test_result_save_failure_restores_allocation_and_allows_retry(self):
         app = self.app
-        app.toggle_other_customer()
+        app.select_mission(2)
+        app.choose_plan("economy")
+        app.select_mission(1)
         app.choose_plan("economy")
         for method in ("add_log", "save_result"):
             with self.subTest(method=method):
@@ -234,12 +235,12 @@ class AppFlowTests(unittest.TestCase):
                 self.assertEqual(app.state.phase, "incident")
                 self.assertIsNone(app.state.score)
                 self.assertIsNone(app.state.response)
-                self.assertEqual((app.center.gpu_used, app.center.power_used), (8, 8))
+                self.assertEqual((app.center.gpu_used, app.center.power_used), (6, 6))
                 self.assertEqual(len(app.db.get_logs(app.playthrough_id)), 2)
                 self.assertEqual(app.db.get_recent_results(), [])
         app.respond("compress")
         self.assertEqual(app.state.phase, "finished")
-        self.assertEqual((app.center.gpu_used, app.center.power_used), (4, 4))
+        self.assertEqual((app.center.gpu_used, app.center.power_used), (2, 2))
         self.assertEqual(len(app.db.get_logs(app.playthrough_id)), 4)
         self.assertEqual(len(app.db.get_recent_results()), 1)
 
@@ -264,12 +265,12 @@ class AppFlowTests(unittest.TestCase):
         self.assertEqual(app.db.conn.execute("SELECT COUNT(*) FROM event_logs").fetchone()[0], 0)
         self.assertEqual(app.state.phase, "ready")
         app.choose_plan("economy")
-        app.append_story.reset_mock()
+        app.refresh.reset_mock()
         with patch.object(app.db, "add_log", side_effect=fail_second_log()):
             app.respond("compress")
         self.assertEqual(len(app.db.get_logs(app.playthrough_id)), 2)
         self.assertEqual(app.state.phase, "incident")
-        app.append_story.assert_not_called()
+        app.refresh.assert_not_called()
         app.respond("compress")
         self.assertEqual(len(app.db.get_logs(app.playthrough_id)), 4)
         self.assertEqual(app.center.gpu_used, 0)

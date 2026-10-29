@@ -1,4 +1,4 @@
-"""v0.3 고객별 미션 선택과 기존 데이터 보존 테스트."""
+"""고객별 미션 전환과 기존 데이터 보존 테스트."""
 import sqlite3
 from contextlib import closing
 import tempfile
@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from database import Database
-from game import DataCenter, GameState
 from main import SimulatorApp
 
 
@@ -90,77 +89,59 @@ class MissionDatabaseTests(unittest.TestCase):
 
 class MissionSelectionTests(unittest.TestCase):
     def setUp(self):
+        from session import GameSession
         self.app = SimulatorApp.__new__(SimulatorApp)
         app = self.app
+        app.root = Mock()
         app.db = Database(":memory:")
         self.addCleanup(app.db.close)
-        app.center = DataCenter()
-        app.state = GameState(center=app.center)
-        app.mission = app.db.get_mission()
-        app.playthrough_id = None
-        app.other_customer_active = False
-        for name in ("story", "mission_list", "action_frame", "history", "status_var", "other_customer_button"):
-            setattr(app, name, Mock())
-        app.action_frame.winfo_children.return_value = []
-        app.history.get_children.return_value = []
-        app.append_story = Mock()
+        app.session = GameSession(app.db)
+        app.center = app.session.center
+        app.refresh = Mock()
         dialogs = patch("main.messagebox")
         self.dialogs = dialogs.start()
         self.addCleanup(dialogs.stop)
-        # UI 생성만 대체하고 실제 선택, 렌더링, 기록 조회 로직은 실행합니다.
-        for target in ("main.ttk.Label", "main.ttk.Button"):
-            patcher = patch(target)
-            patcher.start()
-            self.addCleanup(patcher.stop)
 
     def test_default_mission_on_startup(self):
-        with patch("main.Database", return_value=self.app.db), \
-                patch.object(SimulatorApp, "setup_ui"), patch.object(SimulatorApp, "new_mission"):
-            app = SimulatorApp(Mock())
-        self.assertEqual((app.mission["company_name"], app.mission["country"]), ("Merlion AI", "싱가포르"))
+        self.assertEqual((self.app.mission["company_name"], self.app.mission["country"]),
+                         ("Merlion AI", "싱가포르"))
+        self.assertEqual(self.app.state.country, "싱가포르")
 
-    def test_selection_updates_story_and_starts_ready(self):
+    def test_selection_updates_current_customer_and_starts_ready(self):
         app = self.app
         for mission in app.db.get_missions()[1:]:
-            app.mission_list.selection.return_value = (str(mission["id"]),)
-            app.on_mission_selected()
+            app.select_mission(mission["id"])
             self.assertEqual(app.mission["id"], mission["id"])
+            self.assertEqual(app.state.country, mission["country"])
             self.assertEqual(app.state.phase, "ready")
             self.assertIsNone(app.playthrough_id)
-            story = app.append_story.call_args.args[0]
-            for key in ("company_name", "country", "title", "description"):
-                self.assertIn(mission[key], story)
+            app.refresh.assert_called()
 
-    def test_in_progress_switch_is_blocked_in_handler_and_direct_call(self):
+    def test_in_progress_switch_preserves_original_mission(self):
         app = self.app
         app.choose_plan("economy")
         state, run_id = app.state, app.playthrough_id
-        app.mission_list.configure.assert_called_with(selectmode="none")
-        app.mission_list.selection.return_value = ("2",)
-        app.on_mission_selected()
+        app.select_mission(2)
+        self.assertEqual(app.state.phase, "ready")
         app.select_mission(3)
-        self.assertEqual(app.mission["id"], 1)
+        app.select_mission(1)
         self.assertIs(app.state, state)
         self.assertEqual(app.playthrough_id, run_id)
         self.assertEqual((app.center.gpu_used, app.center.power_used), (4, 4))
-        app.mission_list.selection_set.assert_called_with("1")
         app.respond("compress")
         self.assertEqual(app.db.get_recent_results()[0]["mission_id"], 1)
 
     def test_all_customers_can_run_in_sequence_with_correct_results(self):
         app = self.app
-        missions = app.db.get_missions()
         outcomes = [("economy", "compress", "성공", 85),
-                    ("performance", "compress", "실패", 20),
+                    ("performance", "compress", "성공", 95),
                     ("performance", "reroute", "성공", 90)]
-        app.center.allocate(1, 1)  # 다른 사용자의 자원은 미션 전환 후에도 보존
-        for mission, (plan, response, status, score) in zip(missions, outcomes):
+        app.center.allocate(1, 1)
+        for mission, (plan, response, status, score) in zip(app.db.get_missions(), outcomes):
             app.select_mission(mission["id"])
-            self.assertEqual(app.state.phase, "ready")
             app.choose_plan(plan)
             app.respond(response)
             self.assertEqual(app.state.phase, "finished")
-            app.mission_list.configure.assert_called_with(selectmode="browse")
             self.assertEqual((app.center.gpu_used, app.center.power_used), (1, 1))
             result = app.db.get_recent_results()[0]
             for key in ("company_name", "country", "title"):
@@ -171,10 +152,6 @@ class MissionSelectionTests(unittest.TestCase):
             self.assertIn(mission["company_name"], logs[0]["message"])
             self.assertIn("국제 네트워크", logs[1]["message"])
             self.assertEqual(len(logs), 4)
-            app.history.insert.assert_any_call(
-                "", "end", iid=str(result["id"]),
-                values=(result["id"], mission["company_name"], mission["country"], mission["title"], status, score),
-            )
         self.assertEqual(len(app.db.get_recent_results()), 3)
 
     def test_invalid_selection_keeps_current_mission(self):
@@ -183,7 +160,6 @@ class MissionSelectionTests(unittest.TestCase):
         self.assertEqual(app.mission["id"], 1)
         self.assertEqual(app.state.phase, "ready")
         self.dialogs.showerror.assert_called_once()
-        app.mission_list.selection_set.assert_called_with("1")
 
 
 if __name__ == "__main__":

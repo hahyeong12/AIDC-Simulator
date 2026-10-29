@@ -10,6 +10,25 @@ PLANS = {
     "performance": {"label": "고성능 모드", "gpu": 7, "power": 7, "network": 5, "bonus": 15},
     "economy": {"label": "절약형 모드", "gpu": 4, "power": 4, "network": 3, "bonus": 5},
 }
+# 국가로 규칙을 연결하므로 기존 DB의 고객/미션 ID를 바꿀 필요가 없습니다.
+CUSTOMER_PLANS = {
+    "싱가포르": PLANS,
+    "일본": {
+        "performance": {"label": "고성능 모드", "gpu": 3, "power": 4, "network": 3, "bonus": 15},
+        "economy": {"label": "절약형 모드", "gpu": 2, "power": 2, "network": 2, "bonus": 5},
+    },
+    "미국": {
+        "performance": {"label": "고성능 모드", "gpu": 6, "power": 6, "network": 6, "bonus": 15},
+        "economy": {"label": "절약형 모드", "gpu": 4, "power": 3, "network": 5, "bonus": 5},
+    },
+}
+
+
+def plans_for(country: str) -> dict:
+    """이전 버전의 사용자 추가 고객은 기본 학습 작업 규칙을 사용합니다."""
+    return CUSTOMER_PLANS.get(country, PLANS)
+
+
 RESPONSES = {
     "reroute": {"label": "백업 경로로 우회", "penalty": 15},
     "compress": {"label": "전송 데이터 압축", "penalty": 10},
@@ -75,6 +94,11 @@ class GameState:
     score: int | None = None
     succeeded: bool | None = None
     result_text: str = ""
+    country: str = "싱가포르"
+
+    @property
+    def plans(self) -> dict:
+        return plans_for(self.country)
 
     def __post_init__(self) -> None:
         # 기본 생성과 명시적인 None 모두 독립된 데이터센터로 연결합니다.
@@ -86,7 +110,7 @@ class GameState:
             raise ValueError("자원 배분은 미션 시작 전에만 선택할 수 있습니다.")
         if plan_key not in PLANS:
             raise ValueError("존재하지 않는 운영 모드입니다.")
-        plan = PLANS[plan_key]
+        plan = self.plans[plan_key]
         if not self.center.allocate(plan["gpu"], plan["power"]):
             raise ValueError("현재 사용 가능한 자원이 부족합니다.")
 
@@ -112,7 +136,7 @@ class GameState:
         self.network_available = available
         self.network_needed = required
         self.succeeded = required <= available
-        base_score = 80 + PLANS[self.plan]["bonus"]
+        base_score = 80 + self.plans[self.plan]["bonus"]
         penalty = RESPONSES[response_key]["penalty"]
         self.score = max(0, min(100, base_score - penalty + (10 if self.succeeded else -65)))
         if self.succeeded:

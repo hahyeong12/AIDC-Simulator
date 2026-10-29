@@ -136,12 +136,22 @@ class Database:
         with self.transaction():
             cursor = self.conn.execute(
                 """UPDATE playthroughs SET response=?, status=?, score=?, result_text=?,
-                   finished_at=? WHERE id=?""",
+                   finished_at=? WHERE id=? AND status='진행중'""",
                 (response, "성공" if succeeded else "실패", score,
                  result_text, now_text(), playthrough_id),
             )
             if cursor.rowcount != 1:
-                raise ValueError(f"수행 기록 {playthrough_id}을 찾을 수 없습니다.")
+                raise ValueError(f"진행 중인 수행 기록 {playthrough_id}을 찾을 수 없습니다.")
+
+    def get_recent_records(self, limit: int = 30) -> list[sqlite3.Row]:
+        """현재 작업 및 이전 실행의 미완료 기록까지 조회합니다."""
+        return self.conn.execute(
+            """SELECT p.id, p.mission_id, c.company_name, c.country, m.title, p.status, p.score,
+                      p.started_at, p.plan, p.response
+               FROM playthroughs p JOIN missions m ON p.mission_id = m.id
+               JOIN clients c ON m.client_id = c.id ORDER BY p.id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
 
     def get_recent_results(self, limit: int = 12) -> list[sqlite3.Row]:
         return self.conn.execute(
