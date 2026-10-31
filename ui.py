@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
-from game import game_time
+from game import game_time, GameState
 
 BG, PANEL, RAISED, BORDER = '#080f1d', '#101c2e', '#17273d', '#263b54'
 TEXT, MUTED, CYAN, BLUE = '#e3edf8', '#91a7c1', '#38d9d0', '#6d9fff'
@@ -84,14 +84,15 @@ class TextDialog(tk.Toplevel):
 
 
 class MessageDialog(tk.Toplevel):
-    """단계별 업무 메신저. 전체 보기와 즉시 표시를 지원합니다."""
-    def __init__(self, parent, company, country, steps, animate=True, message_kind='업무 메시지'):
+    """타이핑 완성과 페이지 이동을 다음 버튼 하나로 처리하는 업무 메신저."""
+    def __init__(self, parent, company, country, steps, animate=True, message_kind='업무 메시지', confirm=None):
         super().__init__(parent, bg=BG)
         self.title(f'AIDC LINK | {company} · {country}')
         self.geometry('760x470')
         self.minsize(610, 390)
         self.steps, self.index, self.animate = steps, 0, animate
         self.message_kind = message_kind
+        self.confirm = confirm
         self.timer, self.shown = None, 0
         self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=1)
@@ -109,8 +110,6 @@ class MessageDialog(tk.Toplevel):
         self.previous_button.pack(side='left', padx=(0, 6))
         self.next_button = ActionButton(buttons, '다음 ▶', self.next)
         self.next_button.pack(side='left', padx=6)
-        self.reveal_button = ActionButton(buttons, '즉시 표시', self.reveal)
-        self.reveal_button.pack(side='left', padx=6)
         ActionButton(buttons, '전체 보기', self.show_all).pack(side='left', padx=6)
         self.skip_button = ActionButton(buttons, '건너뛰기', self.skip)
         self.skip_button.pack(side='right')
@@ -128,9 +127,9 @@ class MessageDialog(tk.Toplevel):
         self.speaker.configure(text=speaker)
         self.page.configure(text=f'{self.index+1} / {len(self.steps)}   ·   {self.message_kind} · 과거 내용은 운영실 [대화 기록]')
         self.previous_button.configure(state='normal' if self.index else 'disabled')
-        self.next_button.configure(text='확인 · 운영실로' if self.index == len(self.steps)-1 else '다음 ▶')
+        final_text = self.confirm[0] if self.confirm else '확인 · 운영실로'
+        self.next_button.configure(text=final_text if self.index == len(self.steps)-1 else '다음 ▶')
         self.shown = 0
-        self.reveal_button.configure(state='normal')
         self._type() if self.animate else self.reveal()
     def _set_text(self, text):
         self.bubble.configure(state='normal')
@@ -143,13 +142,10 @@ class MessageDialog(tk.Toplevel):
         self._set_text(self.full_text[:self.shown])
         if self.shown < len(self.full_text):
             self.timer = self.after(18, self._type)
-        else:
-            self.reveal_button.configure(state='disabled')
     def reveal(self):
         self._cancel()
         self.shown = len(self.full_text)
         self._set_text(self.full_text)
-        self.reveal_button.configure(state='disabled')
     def skip(self):
         self.index = len(self.steps)-1
         self.render()
@@ -160,6 +156,8 @@ class MessageDialog(tk.Toplevel):
         elif self.index < len(self.steps)-1:
             self.index += 1
             self.render()
+        elif self.confirm:
+            self.confirm[1]()
         else:
             self.destroy()
     def previous(self):
@@ -223,82 +221,249 @@ class NetworkMap(tk.Canvas):
 
 
 class ResourcePanel(tk.Frame):
+    """가용 에너지 셀과 어두운 사용 슬롯을 구분하는 Canvas 자원 HUD."""
     def __init__(self, parent, session):
-        super().__init__(parent, bg=PANEL, padx=12, pady=10)
+        super().__init__(parent, bg=PANEL, padx=10, pady=4, highlightthickness=1,
+                         highlightbackground='#31516a')
         self.session, self.preview_plan = session, 'performance'
-        label(self, '자원 관제', 12, bold=True).pack(anchor='w')
-        self.gpu_label = label(self, size=11, bold=True)
-        self.gpu_label.pack(anchor='w', pady=(4, 2))
-        self.rack = tk.Canvas(self, bg=PANEL, width=220, height=48, highlightthickness=0)
+        self.slot_signature = None
+        self.slot_owners = [None]*session.center.gpu_total
+        self.pulse_timer = None
+        self.pulse_step = 0
+        self.changed_slots = set()
+        self.rack = tk.Canvas(self, bg=PANEL, width=240, height=118, highlightthickness=0)
         self.rack.pack(fill='x')
         self.rack.bind('<Configure>', lambda _: self.refresh())
-        self.power_label = label(self, size=10)
-        self.power_label.pack(anchor='w', pady=(3, 2))
-        self.power = tk.Canvas(self, bg=PANEL, width=220, height=12, highlightthickness=0)
+        self.gpu_label = label(self.rack, size=10, color=CYAN, bold=True)
+        self.gpu_numbers = {}
+        for key, size in (('available', 26), ('total', 16), ('used', 11)):
+            self.gpu_numbers[key] = label(self.rack, size=size, color=CYAN if key == 'available' else TEXT, bold=True)
+        for widget in (self.gpu_label, *self.gpu_numbers.values()):
+            widget.configure(bg='#0c192a', bd=0, padx=0, pady=0, highlightthickness=0)
+        self.legend = tk.Frame(self, bg=PANEL)
+        self.legend.pack(fill='x', pady=(2, 5))
+        self.owners = label(self.legend, size=10, color=MUTED)
+        self.owners.pack(side='left')
+        self.legend_labels = []
+        for _ in session.missions:
+            self.legend_labels.append(label(self.legend, size=10))
+        self.power = tk.Canvas(self, bg=PANEL, width=240, height=60, highlightthickness=0)
         self.power.pack(fill='x')
         self.power.bind('<Configure>', lambda _: self.refresh())
-        self.free = label(self, color=CYAN, size=10)
-        # 가용량은 위 두 자원 제목에 상시 표시하며 중복 줄을 늘리지 않습니다.
-        self.owners = label(self, size=9, justify='left', wraplength=230, anchor='w')
-        self.owners.pack(fill='x', pady=(3, 3))
-        label(self, '선택 모드 배정 미리보기', 10, bold=True).pack(anchor='w')
-        self.preview_bar = tk.Canvas(self, bg=PANEL, width=220, height=16, highlightthickness=0)
-        self.preview_bar.pack(fill='x', pady=(3, 2))
-        self.preview = label(self, size=10, justify='left', wraplength=230, anchor='w')
-        self.preview.pack(fill='x')
+        self.power_label = label(self.power, size=10)
+        self.power_label.configure(bg='#0c192a', bd=0, padx=0, pady=0)
+        self.preview_frame = tk.Frame(self, bg='#0c192a', padx=5, pady=2,
+                                      highlightthickness=1, highlightbackground='#31516a')
+        self.preview_frame.pack(fill='x', pady=(4, 0))
+        self.preview_title = label(self.preview_frame, size=11, bold=True, anchor='w')
+        self.preview_title.pack(fill='x')
+        self.preview = label(self.preview_frame, size=10, justify='left', wraplength=245, anchor='w')
+        self.preview.pack(fill='x', pady=(3, 0))
+        self.bind('<Destroy>', self._stop_pulse, add='+')
+        self.bind('<Configure>', self._resize_hud, add='+')
+
+    def _resize_hud(self, event):
+        if event.widget is self:
+            # 최소 창에서는 중복 비교 캡션만 생략하고 숫자·셀·본문 글자 크기는 유지합니다.
+            height = 118 if event.height >= 365 else 106
+            if int(self.rack.cget('height')) != height:
+                self.rack.configure(height=height)
+                self.refresh()
+
+    @staticmethod
+    def _chassis(canvas, width, height):
+        """절삭 모서리와 상·하단 하이라이트로 금속 장비 프레임을 그립니다."""
+        canvas.create_polygon(1, 8, 8, 1, width-9, 1, width-2, 8,
+                              width-2, height-2, 1, height-2,
+                              fill='#0c192a', outline='#31516a', width=1)
+        canvas.create_line(10, 3, width-12, 3, fill='#284056')
+        canvas.create_line(3, height-4, width-4, height-4, fill='#060c16')
+        canvas.create_line(2, 15, 2, 30, fill=CYAN, width=2)
+
+    def _stop_pulse(self, event=None):
+        if event is not None and event.widget is not self:
+            return
+        if self.pulse_timer is not None:
+            self.after_cancel(self.pulse_timer)
+            self.pulse_timer = None
+
+    def _pulse(self):
+        self.pulse_timer = None
+        self.pulse_step += 1
+        if self.pulse_step >= 6:
+            self.changed_slots.clear()
+        self._draw_gpu()
+        if self.changed_slots:
+            self.pulse_timer = self.after(50, self._pulse)
+
+    def _draw_gpu(self):
+        c, canvas = self.session.center, self.rack
+        canvas.delete('all')
+        width = max(220, canvas.winfo_width())
+        height = int(canvas.cget('height'))
+        self._chassis(canvas, width, height)
+        self.gpu_label.configure(text='GPU CAPACITY · 가용 GPU')
+        canvas.create_window(12, 11, window=self.gpu_label, anchor='w')
+        canvas.create_window(12, 44, window=self.gpu_numbers['available'], anchor='w')
+        canvas.create_text(75, 49, text='/', fill=MUTED, font=(FONT, 16))
+        canvas.create_window(87, 49, window=self.gpu_numbers['total'], anchor='w')
+        canvas.create_text(width-64, 46, text='사용', fill=MUTED, font=(FONT, 10))
+        canvas.create_window(width-34, 46, window=self.gpu_numbers['used'])
+        canvas.create_line(12, 68, width-12, 68, fill='#294157')
+        pending, needed, fits = self.gpu_request
+        step = (width-20)/c.gpu_total
+        free_index = 0
+        for i, owner in enumerate(self.slot_signature):
+            used = owner is not None
+            color, country = owner[:2] if used else (CYAN, 'A')
+            x, right = 10+i*step, 10+(i+1)*step-3
+            selected = i in self.selected_slots
+            pulse = i in self.changed_slots and self.pulse_step % 2 == 0
+            # 밝은 가용 셀과 고객 LED만 켜진 어두운 사용 장비는 면적·문자로도 구분합니다.
+            edge = '#efffff' if pulse else CYAN if not used else '#48627a' if selected else '#243449'
+            canvas.create_polygon(x, 74, x+3, 71, right-3, 71, right, 74, right, 100, x, 100,
+                                  fill='#173e47' if not used else '#09111e', outline=edge,
+                                  width=2 if pulse or selected else 1, tags=('slot', f'slot-{i}'))
+            canvas.create_line(x+3, 75, right-3, 75, fill='#a5fff4' if not used else '#30475d')
+            canvas.create_rectangle(x+3, 79, right-3, 97 if not used else 82,
+                                    fill=color, outline='', tags=('gpu-block', 'used' if used else 'available'))
+            canvas.create_text((x+right)/2, 88, text=country,
+                               fill=color if used else '#05282e', font=(FONT, 10, 'bold'),
+                               tags=('slot-state', 'used-state' if used else 'available-state'))
+            if selected:
+                canvas.create_line(x+2, 103, right-2, 103, fill=color, width=2, tags='selected-owner')
+            if pending and not used and free_index < needed:
+                canvas.create_line(x+2, 104, right-2, 104, fill=CYAN if fits else AMBER,
+                                   width=2, tags='request-marker')
+            if not used:
+                free_index += 1
+        if pending and height >= 118:
+            hint = f'요청 {needed} / 가용 {c.available_gpu()}'
+            hint += f' · {needed-c.available_gpu()} 부족' if needed > c.available_gpu() else f' · 배정 후 {c.available_gpu()-needed} 잔여'
+            canvas.create_text(width/2, 113, text=hint, fill=AMBER if not fits else CYAN,
+                               font=(FONT, 10), tags='gpu-comparison')
+
+    def _draw_power(self):
+        c, canvas = self.session.center, self.power
+        canvas.delete('all')
+        width = max(220, canvas.winfo_width())
+        ratio = c.power_used/c.power_total
+        color = RED if ratio >= 1 else AMBER if ratio >= .7 else CYAN
+        self._chassis(canvas, width, 60)
+        canvas.create_text(12, 14, text='POWER / 전력', anchor='w', fill=TEXT, font=(FONT, 11, 'bold'))
+        canvas.create_text(width-12, 14, text=f'{ratio:.0%}', anchor='e', fill=color, font=(FONT, 13, 'bold'))
+        canvas.create_window(width/2, 34, window=self.power_label)
+        canvas.create_rectangle(0, 47, width, 59, fill='#07101e', outline='#31516a', tags='power-total')
+        canvas.create_rectangle(0, 48, width*ratio, 58, fill=color, outline='', tags='power-used')
+        if ratio:
+            canvas.create_line(1, 49, width*ratio, 49, fill='#c4fff4' if ratio < .7 else '#ffe7c4')
+        for i in range(1, 10):
+            canvas.create_line(width*i/10, 53, width*i/10, 58, fill='#0c192a')
+
     def refresh(self, plan=None):
         if plan is not None:
             self.preview_plan = plan
         c = self.session.center
-        active = [r for r in self.session.runs.values() if r.state.phase in ('running', 'incident', 'paused', 'recovering')]
-        colors = []
+        active = [r for r in self.session.runs.values() if r.state.allocated]
+        owners, counts = {}, {}
+        missions = list(self.session.missions)
         for run in active:
-            index = list(self.session.missions).index(run.mission['id'])
-            colors.extend([CUSTOMER_COLORS[index % 4]]*run.state.gpu_used)
-        self.gpu_label.configure(text=f'GPU  사용 {c.gpu_used}  /  가용 {c.available_gpu()}  /  총 {c.gpu_total}')
-        self.rack.delete('all')
-        width = max(180, self.rack.winfo_width())
-        for i in range(c.gpu_total):
-            x, y = i%5*width/5, i//5*24
-            color = colors[i] if i < len(colors) else BORDER
-            self.rack.create_rectangle(x+1, y+1, x+width/5-4, y+21, fill=color, outline=MUTED if i >= c.gpu_used else color, tags='gpu-block')
-        self.power_label.configure(text=f'전력  사용 {c.power_used} / 가용 {c.available_power()} / 총 {c.power_total}')
-        self.power.delete('all')
-        width = max(180, self.power.winfo_width())
-        self.power.create_rectangle(0, 0, width, 12, fill=BORDER, outline='')
-        self.power.create_rectangle(0, 0, width*c.power_used/c.power_total, 12, fill=CYAN, outline='')
-        self.free.configure(text=f'배정 가능 GPU {c.available_gpu()}개 · 전력 {c.available_power()}단위')
-        countries = {'싱가포르':'SG','일본':'JP','미국':'US'}
-        owners = ' · '.join(f'{countries.get(r.mission["country"], r.mission["country"])} {r.state.gpu_used}/{r.state.power_used}' for r in active)
-        self.owners.configure(text='고객별 점유 GPU/전력\n'+owners if active else '현재 점유 작업 없음')
-        s = self.session.current.state
+            color = CUSTOMER_COLORS[missions.index(run.mission['id']) % len(CUSTOMER_COLORS)]
+            code = {'싱가포르':'S', '일본':'J', '미국':'U'}.get(run.mission['country'], 'X')
+            key = (run.request['id'], run.playthrough_id)
+            owners[key], counts[key] = (color, code, key), run.state.gpu_used
+        external = max(0, c.gpu_used-sum(counts.values()))
+        if external:
+            owners[(-1, 0)], counts[(-1, 0)] = (MUTED, 'X', (-1, 0)), external
+        # 다른 고객의 반환 때문에 계속 가동 중인 장비 위치가 이동하지 않게 합니다.
+        occupied = [None]*c.gpu_total
+        for i, key in enumerate(self.slot_owners):
+            if counts.get(key, 0):
+                occupied[i] = key
+                counts[key] -= 1
+        for key, count in counts.items():
+            for _ in range(count):
+                occupied[occupied.index(None)] = key
+        self.slot_owners = occupied
+        signature = tuple(owners[key] if key is not None else None for key in occupied)
+        if signature != self.slot_signature:
+            self._stop_pulse()
+            self.changed_slots = {i for i in range(c.gpu_total) if self.slot_signature is not None and signature[i] != self.slot_signature[i]}
+            self.slot_signature = signature
+            self.pulse_step = 0
+            if self.changed_slots:
+                self.pulse_timer = self.after(50, self._pulse)
+        selected = (self.session.current.request['id'], self.session.current.playthrough_id)
+        self.selected_slots = {i for i,key in enumerate(occupied) if key == selected}
+        for key, value in (('total', c.gpu_total), ('used', c.gpu_used), ('available', c.available_gpu())):
+            self.gpu_numbers[key].configure(text=f'{value:02d}' if key == 'available' else str(value))
+        self.gpu_numbers['available'].configure(fg=RED if c.available_gpu() == 0 else CYAN)
+        countries = {'싱가포르':'SG', '일본':'JP', '미국':'US'}
+        self.owners.configure(text='A 가용 / 사용 ' if active else 'A 가용 · 사용 없음')
+        # 같은 고객의 실행이 여러 개여도 고객별 합계로 범례를 표시합니다.
+        grouped = {}
+        for run in active:
+            mid = run.mission['id']
+            grouped[mid] = grouped.get(mid, 0)+run.state.gpu_used
+        for widget in self.legend_labels:
+            widget.pack_forget()
+        for widget, (mid, used) in zip(self.legend_labels, grouped.items()):
+            mission = self.session.missions[mid]
+            widget.configure(text=f'■ {countries.get(mission["country"], mission["country"])} {used}',
+                             fg=CUSTOMER_COLORS[missions.index(mid) % len(CUSTOMER_COLORS)])
+            widget.pack(side='left', padx=(0, 5))
+        self.power_label.configure(text=f'사용 {c.power_used} / 가용 {c.available_power()} / 총 {c.power_total}')
+        self._draw_power()
+        run, s = self.session.current, self.session.current.state
+        retry = s.phase == 'finished' and not s.succeeded and not run.followup_closed and s.retry_count < 2
+        pending = run.request['status'] in ('new','review','waiting') and s.phase in ('ready','accepted')
+        requested = s.plans[self.preview_plan]['gpu']
         p = s.plans[self.preview_plan]
-        dg, dp = c.available_gpu()-p['gpu'], c.available_power()-p['power']
-        fits = min(dg, dp) >= 0
-        self.preview.configure(text=f'{p["label"]} · GPU {p["gpu"]} / 전력 {p["power"]}\n'
-                               f'GPU {"잔여" if dg >= 0 else "부족"} {abs(dg)} · '
-                               f'전력 {"잔여" if dp >= 0 else "부족"} {abs(dp)}', fg=GREEN if fits else AMBER)
-        self.preview_bar.delete('all')
-        width = max(180, self.preview_bar.winfo_width())
-        self.preview_bar.create_rectangle(0, 0, width, 14, fill=BORDER, outline='')
-        self.preview_bar.create_rectangle(0, 0, width*min(c.gpu_total, c.gpu_used+p['gpu'])/c.gpu_total, 14,
-                                          fill=GREEN if fits else AMBER, outline='')
+        self.gpu_request = (pending or retry, requested,
+                            requested <= c.available_gpu() and p['power'] <= c.available_power())
+        self._draw_gpu()
+        self.preview_frame.configure(highlightbackground='#31516a')
         if s.allocated:
-            self.preview.configure(text=f'현재 작업 GPU {s.gpu_used} / 전력 {s.power_used}\n진행 {s.progress:.0f}% · 잔여 약 {s.remaining_minutes}분', fg=CYAN)
-            self.preview_bar.delete('all')
-            self.preview_bar.create_rectangle(0, 0, width, 14, fill=BORDER, outline='')
-            self.preview_bar.create_rectangle(0, 0, width*s.progress/100, 14, fill=CYAN, outline='')
-        if s.phase != 'finished' and self.session.current.request['status'] != 'rejected':
+            self.preview_title.configure(text='현재 작업 점유 자원')
+            self.preview.configure(text=f'현재 작업 GPU {s.gpu_used} / 전력 {s.power_used}\n'
+                                   f'{s.plans[s.plan]["label"]} · 진행 {s.progress:.0f}%\n'
+                                   f'예상 잔여 {s.remaining_minutes}분', fg=CYAN)
+            selected, duration = s.plan, s.remaining_minutes
+        elif pending or retry:
+            p = s.plans[self.preview_plan]
+            dg, dp = c.available_gpu()-p['gpu'], c.available_power()-p['power']
+            fits = min(dg, dp) >= 0
+            gpu_after = f'잔여 {dg}' if dg >= 0 else f'부족 {-dg}'
+            power_after = f'잔여 {dp}' if dp >= 0 else f'부족 {-dp}'
+            self.preview_title.configure(text=f'{"재처리" if retry else "배정"} 검토 · {p["label"]}')
+            allowed = self.session.plan_agreed(run, self.preview_plan)
+            result = '배정 가능' if fits and allowed else '배정 불가 · 고객 동의 확인 필요' if fits else f'{p["label"]} 배정 불가'
+            self.preview_frame.configure(highlightbackground=GREEN if fits and allowed else RED)
+            self.preview.configure(text=f'GPU {p["gpu"]} 필요 / 가용 {c.available_gpu()} → {gpu_after}\n'
+                                   f'전력 {p["power"]} 필요 / 가용 {c.available_power()} → {power_after}\n'
+                                   + result, fg=GREEN if fits and allowed else AMBER)
             estimates = []
-            for key, short in (('performance','고성능'),('economy','절약형')):
-                duration = s.estimate_minutes(key)
+            for key, short in (('performance','고성능'), ('economy','절약형')):
+                if retry:
+                    duration = GameState(country=s.country).estimate_minutes(key)+20
+                else:
+                    duration = s.estimate_minutes(key)
                 estimates.append(f'{short} {duration}분 → {game_time(self.session.minute+duration)}')
-            t = self.session.current.terms
-            selected = s.plan if s.allocated else self.preview_plan
-            outcome = ('기한 내 예상' if self.session.minute+s.estimate_minutes(selected) <= t['due']
-                       else '기한 초과 예상') if t else '기존 요청 · 기한 평가 제외'
-            self.preview.configure(text=self.preview.cget('text')+'\n'+'\n'.join(estimates)+'\n'+outcome,
-                                   fg=RED if outcome=='기한 초과 예상' else self.preview.cget('fg'))
+            self.preview.configure(text=self.preview.cget('text')+'\n'+'\n'.join(estimates))
+            selected = self.preview_plan
+            duration = (GameState(country=s.country).estimate_minutes(selected)+20 if retry else s.estimate_minutes(selected))
+        else:
+            self.preview_title.configure(text='요청 처리 결과')
+            self.preview.configure(text=(f'자원 반환 완료 · 현재 점유 없음\n이번 수행 GPU {s.gpu_used} / 전력 {s.power_used}'
+                                        if s.phase == 'finished' else '요청 종료 · 배정 자원 없음'), fg=MUTED)
+            return
+        t = run.terms
+        if t:
+            outcome = '기한 내 예상' if self.session.minute+duration <= t['due'] else '기한 초과 예상'
+        else:
+            outcome = '기존 요청 · 기한 평가 제외'
+        self.preview.configure(text=self.preview.cget('text')+'\n'+outcome,
+                               fg=RED if outcome == '기한 초과 예상' else self.preview.cget('fg'))
 
 
 class RejectionDialog(tk.Toplevel):

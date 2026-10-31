@@ -25,8 +25,10 @@ class MissionRun:
     followup_closed: bool = False
     last_feedback: str = ''
     delay_notified: bool = False
+    delay_notice_key: list | None = None
     terms: dict = field(default_factory=dict)
     message_read_id: int = 0
+    proposals: list[dict] = field(default_factory=list)
 
 
 class GameSession:
@@ -90,7 +92,9 @@ class GameSession:
             run = MissionRun(mission,s,dict(request),request['playthrough_id'],
                              followup_closed=snapshot['followup_closed'], last_feedback=snapshot['last_feedback'],
                              delay_notified=snapshot['delay_notified'], terms=snapshot.get('terms', {}),
-                             message_read_id=snapshot.get('message_read_id', 0))
+                             message_read_id=snapshot.get('message_read_id', 0),
+                             proposals=snapshot.get('proposals', []),
+                             delay_notice_key=snapshot.get('delay_notice_key'))
         else:
             s = GameState(center=self.center,country=mission['country'])
             run = MissionRun(mission,s,dict(request),request['playthrough_id'])
@@ -115,6 +119,9 @@ class GameSession:
         events = self.db.get_request_events(request['id'])
         run.messages = [row['message'] for row in events] if events else (
             [row['message'] for row in self.db.get_logs(run.playthrough_id)] if run.playthrough_id else [])
+        if snapshot and run.delay_notified and 'delay_notice_key' not in snapshot:
+            # 이전 저장의 전송 여부를 현재 상황에 연결하여 같은 안내의 재전송을 막습니다.
+            run.delay_notice_key = self._delay_notice_key(run)
         return run
 
     def _persist(self):
@@ -126,11 +133,13 @@ class GameSession:
             state = {k:v for k,v in vars(run.state).items() if k != 'center'}
             self.db.save_runtime(rid,run.playthrough_id,{'state':state,'followup_closed':run.followup_closed,
                                   'last_feedback':run.last_feedback,'delay_notified':run.delay_notified,
-                                  'terms':run.terms, 'message_read_id':run.message_read_id, 'version':2})
+                                  'delay_notice_key':run.delay_notice_key,
+                                  'terms':run.terms, 'message_read_id':run.message_read_id,
+                                  'proposals':run.proposals, 'version':2})
 
     @contextmanager
     def _atomic(self):
-        before = {rid:(run, {**vars(run), 'terms':deepcopy(run.terms)}, vars(run.state).copy(),list(run.messages),dict(run.request))
+        before = {rid:(run, {**vars(run), 'terms':deepcopy(run.terms), 'proposals':deepcopy(run.proposals)}, vars(run.state).copy(),list(run.messages),dict(run.request))
                   for rid,run in self.runs.items()}
         usage = self.center.gpu_used,self.center.power_used
         clock = self.minute,self.roll_index,self.selected_id
@@ -248,6 +257,8 @@ class GameSession:
             raise ValueError('최종 배정 기한을 초과한 요청입니다.')
         if key not in s.plans:
             raise ValueError('존재하지 않는 운영 모드입니다.')
+        if not self.plan_agreed(run, key):
+            raise ValueError('대안에 대한 고객 답변을 확인하거나 고객이 동의한 운영 모드를 선택해 주세요.')
         p = s.plans[key]
         shortage = []
         for name,needed,available in (('GPU',p['gpu'],self.center.available_gpu()),('전력',p['power'],self.center.available_power())):
@@ -264,6 +275,9 @@ class GameSession:
             self.db.change_request_status(run.request['id'],'operating',run.playthrough_id)
         self._emit(run,'start',f'[고객 요청 #{run.request["id"]}] {run.mission["company_name"]} · {run.mission["title"]}')
         self._emit(run,'allocation',f'{s.plans[key]["label"]}: GPU {s.gpu_used} / 전력 {s.power_used} 배정. 정상 실행을 시작합니다.')
+        if run.proposals:
+            self._emit(run,'agreed_plan',f'최종 운영 계획: {s.plans[key]["label"]} · '
+                       + ('고객 동의 대안 적용' if key == run.proposals[-1]['proposed']['mode'] else '원래 요청 조건 적용'))
         if run.terms and not retry:
             run.terms['started'] = self.minute
         self._feedback(run,'현재 작업이 진행 중인 것으로 확인했습니다. 완료 결과를 기다리겠습니다.', 'customer_start')
@@ -276,6 +290,86 @@ class GameSession:
             self._start(run,key)
             self._refresh_request(run)
         return run.messages[-2:]
+
+    def plan_agreed(self, run, key):
+        """기존 요청서의 모드 선택을 유지하되, 협의를 시작한 대안은 동의가 필요합니다."""
+        if not run.proposals:
+            return True
+        proposal = run.proposals[-1]
+        if proposal['status'] == 'pending':
+            return False
+        return key == proposal['original']['mode'] or (
+            proposal['status'] == 'accepted' and key == proposal['proposed']['mode'])
+
+    def _require_proposable(self, run):
+        if run.request['status'] not in ('new','review','waiting') or run.state.phase not in ('ready','accepted'):
+            raise ValueError('작업 시작 전 요청을 검토할 때만 대안을 제시할 수 있습니다.')
+        if run.terms and self.minute >= run.terms['expires']:
+            raise ValueError('최종 배정 기한을 초과한 요청입니다.')
+
+    def alternative_preview(self, run):
+        """원본 요청서나 실제 자원을 바꾸지 않고 두 기존 모드를 비교합니다."""
+        original = dict(run.state.plans['performance'], mode='performance')
+        proposed = dict(run.state.plans['economy'], mode='economy')
+        original['minutes'] = run.state.estimate_minutes('performance')
+        proposed['minutes'] = run.state.estimate_minutes('economy')
+        due = run.terms.get('due')
+        return {'original':original, 'proposed':proposed, 'created':self.minute, 'due':due,
+                'estimated_finish':self.minute+proposed['minutes'],
+                'on_time':self.minute+proposed['minutes'] <= due if due is not None else None,
+                'resources_available':proposed['gpu'] <= self.center.available_gpu()
+                    and proposed['power'] <= self.center.available_power()}
+
+    def proposal_summary(self, proposal):
+        o, p = proposal['original'], proposal['proposed']
+        deadline = ('기한 내 완료 예상' if proposal['on_time'] else '기한 초과 예상') if proposal['due'] is not None else '기존 요청 · 완료 기한 정보 없음'
+        return (f'원래 요청: {o["label"]} · GPU {o["gpu"]} / 전력 {o["power"]} / 네트워크 {o["network"]}\n'
+                f'제안 조건: {p["label"]} · GPU {p["gpu"]} / 전력 {p["power"]} / 네트워크 {p["network"]}\n'
+                f'사용량 차이: GPU {p["gpu"]-o["gpu"]:+d}개 / 전력 {p["power"]-o["power"]:+d}단위\n'
+                f'예상 처리 시간: {o["minutes"]}분 → {p["minutes"]}분 ({p["minutes"]-o["minutes"]:+d}분)\n'
+                f'제안 시 예상 완료: {game_time(proposal["estimated_finish"])} · {deadline}\n'
+                + (f'원래 완료 기한: {game_time(proposal["due"])} · 기한 유지\n' if proposal['due'] is not None else '')
+                + '장애·추가 대기 지연 제외. 제안과 동의만으로 자원을 배정하지 않습니다.')
+
+    def propose_alternative(self):
+        run = self.current
+        self._require_proposable(run)
+        if run.proposals and run.proposals[-1]['status'] in ('pending','accepted'):
+            raise ValueError('이미 제시한 대안과 고객 답변을 확인해 주세요.')
+        proposal = self.alternative_preview(run)
+        if not proposal['resources_available']:
+            raise ValueError('절약형 운영에 필요한 GPU 또는 전력도 부족합니다. 다른 작업 완료를 기다려 주세요.')
+        with self._atomic():
+            proposal.update(status='pending', decided=None, reason='')
+            run.proposals.append(proposal)
+            original = proposal['original']
+            shortage = original['gpu'] > self.center.available_gpu() or original['power'] > self.center.available_power()
+            intro = ('현재 요청하신 고성능 운영에 필요한 자원이 부족합니다.' if shortage else
+                     '자원 사용량을 줄이는 절약형 운영을 대안으로 제안드립니다.')
+            self._emit(run,'proposal',intro+'\n대신 절약형 운영을 제안드립니다. 필요한 GPU는 줄어들지만 작업 시간이 늘어납니다.\n\n'
+                       + self.proposal_summary(proposal))
+            self._feedback(run,'제안하신 운영 조건을 검토하겠습니다.', 'customer_proposal_review')
+        return deepcopy(proposal)
+
+    def review_alternative(self):
+        """현재 시각의 예상 완료가 기존 기한 이내일 때만 고객이 수락합니다."""
+        run = self.current
+        self._require_proposable(run)
+        if not run.proposals or run.proposals[-1]['status'] != 'pending':
+            raise ValueError('고객 답변을 기다리는 대안이 없습니다.')
+        with self._atomic():
+            proposal = run.proposals[-1]
+            finish = self.minute + run.state.estimate_minutes(proposal['proposed']['mode'])
+            due = run.terms.get('due')
+            accepted = due is not None and finish <= due
+            reason = ('원래 완료 기한 내 처리가 예상되어 대안을 수락합니다.' if accepted else
+                      '완료 기한 정보가 없어 일정 준수를 확인할 수 없습니다. 대안을 거절합니다.' if due is None else
+                      '원래 완료 기한을 넘길 것으로 예상되어 대안을 거절합니다.')
+            proposal.update(status='accepted' if accepted else 'rejected', decided=self.minute,
+                            decision_finish=finish, reason=reason)
+            self._feedback(run,reason+('\n제안하신 절약형 운영에 동의합니다. 자원 배정 후 시작해 주세요.' if accepted else
+                           '\n기존 요청 조건은 유지해 주세요.'), 'customer_proposal_decision')
+        return accepted
 
     def wait_request(self):
         self._decide('waiting')
@@ -392,26 +486,51 @@ class GameSession:
     def notify_delay(self):
         run = self.current
         if not self.can_notify_delay(run):
-            raise ValueError('진행 또는 복구가 필요한 작업에서만 지연 안내를 보낼 수 있습니다.')
-        if run.delay_notified:
-            raise ValueError('이번 수행의 지연 안내는 이미 전달했습니다.')
+            raise ValueError('안내가 필요한 새 지연 상황이 없거나 같은 상황의 안내를 이미 전달했습니다.')
         with self._atomic():
             run.delay_notified = True
+            run.delay_notice_key = self._delay_notice_key(run)
             if run.state.allocated:
                 run.state.cost_penalty += 5
             if run.state.phase in ('incident','paused','recovering'):
-                self._emit(run,'notice','고객에게 장애와 지연을 안내하고 복구 계획을 전달했습니다.')
+                self._emit(run,'notice','고객에게 장애와 지연을 안내하고 복구 계획을 전달했습니다.\n'+self.delay_reason(run))
                 text = '안내 감사합니다. 복구 작업이 완료될 때까지 기다리겠습니다.'
             else:
-                self._emit(run,'notice','고객에게 예상 일정 지연을 안내했습니다. 완료 기한은 유지됩니다.')
+                self._emit(run,'notice','고객에게 예상 일정 지연을 안내했습니다. 완료 기한은 유지됩니다.\n'+self.delay_reason(run))
                 text = f'일정 안내 감사합니다. 남은 처리 예상 {run.state.remaining_minutes}분을 확인했습니다. 약속된 완료 기한은 유지됩니다.'
             self._feedback(run,text,'customer_notice')
 
     def can_notify_delay(self, run):
+        key = self._delay_notice_key(run)
+        return key is not None and key != run.delay_notice_key
+
+    def delay_reason(self, run):
+        """표시와 전송에 같은 판정을 사용하고 정상·종료 작업은 제외합니다."""
         s = run.state
-        return not run.delay_notified and (
-            s.phase in ('incident','paused','recovering') or
-            (s.phase == 'running' and run.terms and self.minute+s.remaining_minutes > run.terms['due']))
+        if not s.allocated or run.followup_closed:
+            return ''
+        finish, due = self.minute+s.remaining_minutes, run.terms.get('due')
+        issue = (f'네트워크 장애 · 필요 {s.network_needed} / 가용 {s.network_available} · '
+                 f'중단 {s.downtime}/60분 · 대응 {s.response_attempts}/3 · 복구 시각 미정' if s.phase in ('incident','paused') else
+                 f'복구·재처리 준비 {s.recovery_left}분 · 일정 변경 안내 필요' if s.phase == 'recovering' else '')
+        if due is not None and (finish > due or self.minute > due):
+            timing = (f'완료 기한 {game_time(due)} / 예상 완료 {game_time(finish)} / '
+                      f'{max(0, finish-due)}분 지연 예상')
+            if self.minute > due:
+                timing += f' · 현재 {self.minute-due}분 기한 초과'
+            return issue+'\n'+timing if issue else timing
+        return issue
+
+    def _delay_notice_key(self, run):
+        if not self.delay_reason(run):
+            return None
+        s = run.state
+        base = [s.retry_count, run.terms.get('due'), self.minute > run.terms['due'] if run.terms else False]
+        if s.phase in ('incident','paused'):
+            # 중단 중 시간 경과만으로 같은 장애 안내가 다시 활성화되지 않습니다.
+            incidents = sum(e['kind'] == 'incident' for e in self.db.get_request_events(run.request['id']))
+            return base + ['incident', incidents, s.work_done, s.response_attempts]
+        return base + ['schedule', self.minute+s.remaining_minutes]
 
     def report_failure(self):
         run = self.current
@@ -437,6 +556,7 @@ class GameSession:
             parent = run.playthrough_id
             run.state = GameState(center=self.center,country=run.mission['country'],retry_count=old.retry_count+1)
             run.delay_notified = False
+            run.delay_notice_key = None
             self._start(run,key,retry=True)
             self.db.link_retry(run.request['id'],run.playthrough_id,parent,run.state.retry_count)
             self._refresh_request(run)
@@ -453,17 +573,21 @@ class GameSession:
     def conversation(self, rid, history=False):
         run = self.runs[rid]
         events = [e for e in self.db.get_request_events(rid)
-                  if e['kind'].startswith('customer_') or e['kind'] in ('feedback','notice','decision','final_report')]
+                  if e['kind'].startswith('customer_') or e['kind'] in ('feedback','notice','decision','final_report','proposal')]
         if history:
             prefix = [] if any(e['kind']=='customer_request' for e in events) else [('과거 요청 기록', run.request['message'])]
             return prefix + [
                 (run.mission['company_name'] if e['kind'].startswith('customer_') or e['kind']=='feedback'
                  else '운영 담당자 · 기록', e['message']) for e in events]
         # 상태 전환 전의 요청/장애 대화가 새 사건의 앞뒤에 다시 붙지 않게 합니다.
-        # 읽지 않은 사건은 모두 시간순으로, 이미 확인했으면 현재 상태의 마지막 대화만 표시합니다.
+        # 읽지 않은 사건은 시간순으로 표시하고, 협의 중인 대안은 재열람해도 비교 내용을 유지합니다.
         lifecycle = {'customer_request','customer_accept','customer_start','customer_incident',
-                     'customer_recovery','customer_complete','customer_failure','customer_reject','customer_expired'}
+                     'customer_recovery','customer_complete','customer_failure','customer_reject','customer_expired',
+                     'proposal'}
         boundary = max((e['id'] for e in events if e['kind'] in lifecycle), default=0)
+        if run.proposals and run.request['status'] in ('new','review','waiting'):
+            # 수락만/배정 대기는 대안에 대한 고객 동의와 별개이므로 제안 내용을 가리지 않습니다.
+            boundary = max((e['id'] for e in events if e['kind'] == 'proposal'), default=boundary)
         if not boundary:
             if run.request['status'] in ('new','review','waiting'):
                 return [(run.mission['company_name'], run.request['message'])]
@@ -474,7 +598,7 @@ class GameSession:
             return [(run.mission['company_name'], run.last_feedback or '현재 작업을 운영 중입니다.')]
         current = [e for e in events if e['id'] >= boundary]
         unread = [e for e in current if e['id'] > run.message_read_id]
-        selected = unread or current[-1:]
+        selected = unread or (current if current[0]['kind'] == 'proposal' else current[-1:])
         if selected:
             return [(run.mission['company_name'] if e['kind'].startswith('customer_') or e['kind']=='feedback'
                      else '운영 담당자', e['message']) for e in selected]

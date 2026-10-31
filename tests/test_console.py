@@ -151,16 +151,13 @@ class ConsoleTests(unittest.TestCase):
         self.assertEqual((app.center.gpu_used,app.center.power_used),(3,4))
         self.assertEqual(self.db.get_runtime(2)['state']['work_done'],10)
 
-    def test_actual_reveal_next_previous_skip_buttons_keep_sequence_consistent(self):
+    def test_actual_next_previous_skip_buttons_keep_sequence_consistent(self):
         dialog = MessageDialog(self.root, '고객', '일본',
                                [('고객','첫 메시지'*60), ('고객','중간'*60), ('고객','마지막'*60)])
-        self.assertEqual(dialog.reveal_button.cget('state'), 'normal')
-        dialog.reveal_button.invoke()
+        self.assertFalse(hasattr(dialog, 'reveal_button'))
+        dialog.next_button.invoke()
         self.assertEqual(dialog.bubble.get('1.0','end-1c'), dialog.full_text)
-        self.assertEqual(dialog.reveal_button.cget('state'), 'disabled')
         self.assertIsNone(dialog.timer)
-        dialog.reveal_button.invoke()
-        self.assertEqual(dialog.index, 0)
         dialog.next_button.invoke()
         self.assertEqual(dialog.index, 1)
         dialog.next_button.invoke()  # 타이핑 중 첫 다음은 현재 페이지를 전부 표시

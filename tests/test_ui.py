@@ -26,7 +26,7 @@ class GuiTests(unittest.TestCase):
         a.select_request(2); a.action_buttons['start'].invoke()
         a.select_request(3); a.action_buttons['start'].invoke()
         self.assertEqual((a.center.gpu_used,a.center.power_used),(9,10))
-        self.assertIn('사용 9',a.resources.gpu_label.cget('text'))
+        self.assertEqual(a.resources.gpu_numbers['used'].cget('text'),'9')
         a.select_request(1); a.plan_var.set('economy'); a.preview_plan()
         self.assertEqual(a.action_buttons['start'].cget('state'),'disabled')
         self.assertIn('부족',a.resources.preview.cget('text'))

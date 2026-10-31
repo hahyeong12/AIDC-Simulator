@@ -4,3 +4,4 @@ __pycache__/
 .vscode/
 aidc_game.db
 aidc_game.db-journal
+aidc_game.db-*

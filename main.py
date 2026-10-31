@@ -1,4 +1,4 @@
-"""AIDC Simulator v0.6: 한 화면에서 운영하는 가상 AIDC 관제실."""
+"""AIDC Simulator v0.7-1: 한 화면에서 운영하는 가상 AIDC 관제실."""
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -13,7 +13,7 @@ from ui import (BG, PANEL, BORDER, TEXT, MUTED, CYAN, GREEN, RED, AMBER, FONT,
 class SimulatorApp:
     def __init__(self, root, db=None, **session_options):
         self.root = root
-        root.title('AIDC Simulator v0.6 | 울산 AI 데이터센터 관제실')
+        root.title('AIDC Simulator v0.7-1 | 울산 AI 데이터센터 관제실')
         root.geometry(f'{min(1280, root.winfo_screenwidth()-40)}x{min(680, root.winfo_screenheight()-100)}')
         root.minsize(1000, 650)
         root.configure(bg=BG)
@@ -48,7 +48,7 @@ class SimulatorApp:
         header = tk.Frame(self.root, bg=BG, padx=16, pady=8)
         header.grid(row=0, sticky='ew')
         label(header, 'AIDC', 22, CYAN, True).pack(side='left')
-        label(header, 'ULSAN / CONTROL ROOM  v0.6', 11, bold=True).pack(side='left', padx=12)
+        label(header, 'ULSAN / CONTROL ROOM  v0.7-1', 11, bold=True).pack(side='left', padx=12)
         self.notice_var = tk.StringVar()
         self.notice_button = ActionButton(header, 'AIDC LINK', self.open_latest_message)
         self.notice_button.pack(side='right')
@@ -208,7 +208,7 @@ class SimulatorApp:
             button.configure(state='normal' if editable else 'disabled')
         for key in ('start','retry'):
             if key in self.action_buttons:
-                allowed = fits and (key != 'retry' or self.state.retry_count < 2)
+                allowed = fits and self.session.plan_agreed(self.session.current, self.plan_var.get()) and (key != 'retry' or self.state.retry_count < 2)
                 self.action_buttons[key].configure(state='normal' if allowed else 'disabled')
 
     def render_actions(self):
@@ -223,6 +223,11 @@ class SimulatorApp:
         self.action_hint.configure(text=f'{self.mission["title"]}  |  진행 {getattr(s,"progress",0):.0f}% · 예상 잔여 {eta}분 (장애·복구 지연 제외)')
         if s.phase in ('ready','accepted'):
             self.action_hint.configure(text='아직 자원이 배정되지 않았습니다. 모드를 확인한 뒤 [배정하고 작업 시작]을 선택하세요.')
+            if self.session.current.proposals:
+                proposal = self.session.current.proposals[-1]
+                status = {'pending':'고객 답변 대기 · 시작 전 답변 확인', 'accepted':'고객 동의 · 절약형으로 시작 가능',
+                          'rejected':'고객 거절 · 기존 고성능 조건 유지'}[proposal['status']]
+                self.action_hint.configure(text=f'절약형 대안: {status}. 자원은 작업 시작 시 다시 확인합니다.')
         elif s.phase == 'running' and s.progress == 0:
             self.action_hint.configure(text='자원 배정 완료 · 진행 0% · +10/+30/+60분을 누르면 모든 정상 작업이 함께 진행됩니다.')
         elif s.phase in ('incident','paused'):
@@ -231,11 +236,18 @@ class SimulatorApp:
             self.action_hint.configure(text=f'복구·재처리 준비 {s.recovery_left}분 · 진행 {s.progress:.0f}% · 준비 후 정상 실행을 재개합니다.')
         elif s.phase == 'finished':
             self.action_hint.configure(text=s.result_text if s.succeeded else f'{s.result_text} 재처리 {s.retry_count}/2회 · 새 배정과 20분 준비가 필요합니다.')
-        self.action_hint.configure(text=self.action_hint.cget('text')+'\n'+self.session.deadline_summary(self.session.current))
+        delay_reason = self.session.delay_reason(self.session.current)
+        if delay_reason:
+            self.action_hint.configure(text=delay_reason)
+        else:
+            self.action_hint.configure(text=self.action_hint.cget('text')+'\n'+self.session.deadline_summary(self.session.current))
         options = []
         if r['status'] in ('new','review','waiting'):
             options = [('start','배정하고 작업 시작',lambda: self.choose_plan(self.plan_var.get())),
+                       ('propose','대안 제시',self.propose_alternative),
                        ('wait','요청 대기',self.wait_request), ('reject','거절 · 사유',self.show_rejection)]
+            if self.session.current.proposals and self.session.current.proposals[-1]['status'] in ('pending','accepted'):
+                options[1] = ('propose','대안 · 고객 답변',lambda: self.open_message(self.session.selected_id))
             if s.phase != 'accepted':
                 options.insert(0, ('accept','수락만 · 배정 대기',lambda: self._perform(self.session.accept_request)))
         elif s.phase in ('incident','paused'):
@@ -271,6 +283,19 @@ class SimulatorApp:
         return self._perform(lambda: self.session.select(rid))
     def choose_plan(self, key):
         return self._perform(lambda: self.session.choose_plan(key))
+    def propose_alternative(self):
+        if self._perform(self.session.propose_alternative):
+            return self.open_message(self.session.selected_id)
+    def review_alternative(self, rid, proposal_count):
+        if self.session.selected_id != rid or len(self.session.current.proposals) != proposal_count:
+            messagebox.showerror('고객 협의 오류', '대안을 제시한 요청을 다시 선택해 고객 답변을 확인해 주세요.', parent=self.root)
+            return
+        if self._perform(self.session.review_alternative):
+            if self.session.current.proposals[-1]['status'] == 'accepted':
+                self.plan_var.set('economy')
+            else:
+                self.plan_var.set('performance')
+            return self.open_message(rid)
     def respond(self, key):
         return self._perform(lambda: self.session.respond(key))
     def next_request(self):
@@ -309,8 +334,13 @@ class SimulatorApp:
         if self.message_window is not None and self.message_window.winfo_exists():
             self.message_window.destroy()
         run = self.session.current
+        confirm = None
+        if (run.proposals and run.proposals[-1]['status'] == 'pending'
+                and run.request['status'] in ('new','review','waiting')):
+            confirm = ('고객 답변 확인', lambda count=len(run.proposals): self.review_alternative(rid, count))
         self.message_window = MessageDialog(self.root, run.mission['company_name'], run.mission['country'], steps,
-                                            message_kind='새 메시지' if was_unread else '확인한 메시지 · 현재 상태')
+                                            message_kind='새 메시지' if was_unread else '확인한 메시지 · 현재 상태',
+                                            confirm=confirm)
         return self.message_window
     def show_conversation_history(self):
         steps = self.session.conversation(self.session.selected_id, history=True)

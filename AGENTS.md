@@ -23,7 +23,8 @@
 - 프로젝트명: AIDC Simulator
 - 기술: Python, Tkinter GUI, SQLite 데이터베이스
 - 목적: 가상의 울산 AI 데이터센터를 운영하는 미션 기반 시뮬레이션 게임
-- 현재 버전: v0.6 게임 밸런스·고객 기한·사건별 메시지 개선 완료 (139개 테스트)
+- 현재 버전: v0.7-1 고객 대안 협의·AIDC LINK/지연 안내·RTS 자원 HUD 개선 완료 (190개 테스트)
+- 라이선스: MIT License, Copyright (c) 2026 hahyeong12 (`LICENSE`)
 - `main.py`: GUI 및 사용자 입력 처리
 - `ui.py`: 단계별 업무 메신저·사유 입력 창·네트워크 및 자원 미리보기
 - `session.py`: 요청·가상 시간·동시 작업·장애 및 후속 대응·저장과 이어하기
@@ -31,6 +32,10 @@
 - `database.py`: 데이터베이스 처리
 - 새 요청만 고객별 기한·지연 감점을 적용합니다. 이전 runtime에 terms가 없으면 기한 평가에서 제외하며 과거 기록의 점수를 소급 변경하지 않습니다.
 - 기한·알림 여부·대화 확인 지점은 runtime JSON 버전 2에 저장하며 기존 SQL 테이블과 CHECK를 유지합니다.
+- 대안 조건과 고객 동의/거절은 `proposals`에 별도 저장합니다. 원본 요청과 기한을 변경하지 않고, 협의 중이거나 거절된 대안의 배정을 차단하며 실제 시작 시 자원을 다시 검사합니다.
+- 지연 안내는 상황별 `delay_notice_key`로 중복을 막습니다. 새 장애·일정 변경은 재안내할 수 있고 종료된 작업은 안내하지 않습니다. 두 필드는 JSON 버전 2의 선택 필드로 이전 저장과 호환합니다.
+- GPU HUD의 슬롯 위치·점등 타이머는 화면 상태입니다. 게임 자원을 변경하거나 DB에 별도 장비 규칙을 추가하지 않습니다.
+- `tests/test_alternatives.py`, `tests/test_usability.py`, `tests/test_resource_hud.py`: 협의·동의·DB 호환·지연 안내·실제 Tk HUD·타이머 검증
 - `tests/test_balance.py`: 고정 접수 일정·시드에서 전략 A/B/C 비교. `python -m tests.test_balance`로 수치 출력
 - `tests/`: 자동화 테스트
 - 테스트 명령: `python -m unittest discover -s tests -v`
