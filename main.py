@@ -1,19 +1,20 @@
-"""AIDC Simulator v0.7-2: 한 화면에서 운영하는 가상 AIDC 관제실."""
+"""AIDC Simulator v0.8-2: 실제 서버 점유와 연결된 AIDC 관제실."""
 import tkinter as tk
 from tkinter import ttk, messagebox
 
 from database import Database
 from session import GameSession, MAX_PENDING_REQUESTS
 from game import RESPONSES, game_time
+from server_console import LiveOverview, LiveServerRoom, ServerPanel
 from ui import (BG, PANEL, BORDER, TEXT, MUTED, CYAN, GREEN, RED, AMBER, FONT,
-                ActionButton, NetworkMap, ResourcePanel, RejectionDialog, MessageDialog,
+                ActionButton, RejectionDialog, MessageDialog,
                 TextDialog, label, request_status_of, status_of)
 
 
 class SimulatorApp:
     def __init__(self, root, db=None, **session_options):
         self.root = root
-        root.title('AIDC Simulator v0.7-2 | 울산 AI 데이터센터 관제실')
+        root.title('AIDC Simulator v0.8-2 | 울산 AI 데이터센터 관제실')
         root.geometry(f'{min(1280, root.winfo_screenwidth()-40)}x{min(680, root.winfo_screenheight()-100)}')
         root.minsize(1000, 650)
         root.configure(bg=BG)
@@ -43,65 +44,69 @@ class SimulatorApp:
                         borderwidth=0, rowheight=29, font=(FONT, 10))
         style.configure('Treeview.Heading', background=BORDER, foreground=TEXT, font=(FONT, 10, 'bold'))
         style.map('Treeview', background=[('selected', BORDER)], foreground=[('selected', CYAN)])
+        style.configure('TNotebook',background=PANEL,borderwidth=0)
+        style.configure('TNotebook.Tab',background=BORDER,foreground=MUTED,padding=(7,4))
+        style.map('TNotebook.Tab',background=[('selected',PANEL)],foreground=[('selected',CYAN)])
+        style.configure('Treeview',bordercolor=BORDER,lightcolor=BORDER,darkcolor=BORDER)
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(1, weight=1)
+        self.root.rowconfigure(2, weight=1)
         header = tk.Frame(self.root, bg=BG, padx=16, pady=8)
         header.grid(row=0, sticky='ew')
         label(header, 'AIDC', 22, CYAN, True).pack(side='left')
-        label(header, 'ULSAN / CONTROL ROOM  v0.7-2', 11, bold=True).pack(side='left', padx=12)
+        label(header, 'ULSAN / CONTROL ROOM  v0.8-2', 11, bold=True).pack(side='left', padx=12)
         self.notice_var = tk.StringVar()
         self.notice_button = ActionButton(header, 'AIDC LINK', self.open_latest_message)
         self.notice_button.pack(side='right')
         self.status_var = tk.StringVar()
         tk.Label(header, textvariable=self.status_var, bg=BG, fg=CYAN, font=(FONT, 11),
                  justify='right').pack(side='right', padx=14)
+        self.overview = LiveOverview(self.root, self.session)
+        self.overview.grid(row=1, sticky='ew', padx=12, pady=(0,6))
         body = self.body = tk.Frame(self.root, bg=BG)
-        body.grid(row=1, sticky='nsew', padx=12, pady=(0, 8))
-        body.columnconfigure(0, minsize=280)
+        body.grid(row=2, sticky='nsew', padx=12, pady=(0, 5))
+        body.columnconfigure(0, minsize=220)
         body.columnconfigure(1, weight=1, minsize=300)
-        body.columnconfigure(2, minsize=270)
+        body.columnconfigure(2, minsize=244)
         body.rowconfigure(0, weight=1)
-        left = tk.Frame(body, bg=PANEL, padx=10, pady=8)
+        left = tk.Frame(body, bg=PANEL, padx=6, pady=5)
         left.grid(row=0, column=0, sticky='nsew', padx=(0, 10))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(1, weight=2, minsize=55)
-        left.rowconfigure(4, weight=1, minsize=55)
+        left.rowconfigure(4, weight=1, minsize=60)
         label(left, 'AIDC LINK · 고객 요청함', 11, bold=True).grid(row=0, sticky='w', pady=(0, 5))
-        self.inbox = self.make_list(left, ('client', 'status'), ('고객 / 국가', '상태 / 대기 / 기한'), (155, 145), 4)
+        self.inbox = self.make_list(left, ('client', 'status'), ('고객 / 국가', '상태 / 기한'), (110, 100), 4)
         self.inbox.grid(row=1, sticky='nsew')
         self.inbox.bind('<ButtonRelease-1>', self.on_inbox_click)
         self.inbox.bind('<Return>', lambda _: self.open_selected_message())
         arrival = tk.Frame(left, bg=BORDER, padx=8, pady=6)
         arrival.grid(row=2, sticky='ew', pady=6)
         arrival.columnconfigure(0, weight=1)
-        self.arrival_notice = label(arrival, size=10, justify='left', anchor='w', wraplength=235)
+        self.arrival_notice = label(arrival, size=9, justify='left', anchor='w', wraplength=190)
         self.arrival_notice.grid(row=0, sticky='ew')
         self.arrival_request_id = None
         self.arrival_open_button = ActionButton(arrival, '요청 확인', self.open_arrival_message)
         self.arrival_open_button.grid(row=1, sticky='ew', pady=(4, 0))
-        self.arrival_schedule = label(arrival, size=9, color=MUTED, anchor='w', wraplength=235)
+        self.arrival_schedule = label(arrival, size=9, color=MUTED, anchor='w', wraplength=190)
         self.arrival_schedule.grid(row=2, sticky='ew', pady=(4,0))
         label(left, '운영 작업 · 진행률', 11, bold=True).grid(row=3, sticky='w', pady=(3, 5))
-        self.active_list = self.make_list(left, ('client', 'progress'), ('고객', '상태 / 진행'), (95, 130), 3)
+        self.active_list = self.make_list(left, ('client', 'progress'), ('고객', '상태 / 진행'), (70, 140), 3)
         self.active_list.grid(row=4, sticky='nsew')
         self.active_list.bind('<ButtonRelease-1>', self.on_active_click)
-        middle = tk.Frame(body, bg=PANEL, padx=10, pady=8)
+        middle = tk.Frame(body, bg=PANEL, padx=0, pady=0)
         middle.grid(row=0, column=1, sticky='nsew', padx=(0, 10))
-        label(middle, '울산 AIDC · 글로벌 운영망', 12, bold=True).pack(anchor='w')
-        label(middle, '청록: 실행  /  빨강: 장애  /  파랑: 복구', 9, MUTED).pack(anchor='w', pady=4)
-        self.network = NetworkMap(middle, self.session, self.select_request)
+        self.resources = ServerPanel(body, self.session)
+        self.network = self.server_room = LiveServerRoom(middle, self.session, self.resources.select_server)
         self.network.pack(fill='both', expand=True)
         self.alert = label(middle, size=10, color=AMBER, justify='left', wraplength=400)
-        self.alert.pack(fill='x', pady=(5, 0))
-        label(middle, '교육용 가상 네트워크 · 실제 설비와 무관', 9, MUTED).pack(anchor='w', pady=(4, 0))
-        self.resources = ResourcePanel(body, self.session)
+        self.alert.pack(fill='x', pady=(3, 0))
         self.resources.grid(row=0, column=2, sticky='nsew')
-        controls = self.controls = tk.Frame(self.root, bg=PANEL, padx=12, pady=8)
-        controls.grid(row=2, sticky='ew', padx=12, pady=(0, 7))
+        self.network.extra_canvases = [self.overview, self.resources.inspector]
+        controls = self.controls = tk.Frame(self.root, bg=PANEL, padx=12, pady=4)
+        controls.grid(row=3, sticky='ew', padx=12, pady=(0, 5))
         controls.columnconfigure(0, weight=1)
         self.detail_title = label(controls, size=11, bold=True, anchor='w')
         self.detail_title.grid(row=0, sticky='ew')
-        self.action_hint = label(controls, color=MUTED, anchor='w', justify='left')
+        self.action_hint = label(controls, size=9, color=MUTED, anchor='w', justify='left')
         self.action_hint.grid(row=1, sticky='ew', pady=(3, 5))
         self.action_hint.bind('<Configure>', lambda e: self.action_hint.configure(wraplength=max(300, e.width-5)))
         modes = tk.Frame(controls, bg=PANEL)
@@ -111,7 +116,7 @@ class SimulatorApp:
         self.mode_buttons = {}
         for key, text in (('performance', '고성능 모드'), ('economy', '절약형 모드')):
             button = tk.Radiobutton(modes, text=text, variable=self.plan_var, value=key,
-                                    command=self.preview_plan, bg=PANEL, fg=TEXT, selectcolor=BORDER,
+                                    command=lambda:self.preview_plan(show_preview=True), bg=PANEL, fg=TEXT, selectcolor=BORDER,
                                     activebackground=PANEL, activeforeground=CYAN, font=(FONT, 10))
             button.pack(side='left', padx=(0, 12))
             button.bind('<Enter>', lambda _, k=key: self.resources.refresh(k))
@@ -120,7 +125,7 @@ class SimulatorApp:
         self.action_frame = tk.Frame(controls, bg=PANEL)
         self.action_frame.grid(row=3, sticky='ew')
         tools = tk.Frame(self.root, bg=BG, padx=12)
-        tools.grid(row=3, sticky='ew', pady=(0, 5))
+        tools.grid(row=4, sticky='ew', pady=(0, 5))
         label(tools, '가상 시간 진행', 10, CYAN, True).pack(side='left', padx=(0, 10))
         self.time_buttons = {}
         for minutes in (10, 30, 60):
@@ -186,7 +191,6 @@ class SimulatorApp:
         if incoming:
             plan = incoming.state.plans['performance']
             self.arrival_notice.configure(text=f'{incoming.mission["company_name"]} · 새 요청\n'
-                                          f'{incoming.mission["title"]}\n'
                                           f'필요 GPU {plan["gpu"]} · 가용 GPU {self.center.available_gpu()}', fg=CYAN)
         else:
             self.arrival_notice.configure(text='새 요청은 시간 진행 중 자동 도착합니다.', fg=MUTED)
@@ -194,13 +198,16 @@ class SimulatorApp:
         pending = self.session.pending_request_count
         limit_note = ' · 접수 보류' if pending >= MAX_PENDING_REQUESTS else ''
         self.arrival_schedule.configure(text=f'다음 {self.session.next_arrival_label} · '
-                                       f'미처리 {pending}/{MAX_PENDING_REQUESTS}{limit_note}')
+                                       f'{pending}/{MAX_PENDING_REQUESTS}'+(' 보류' if limit_note else ''))
         faults = [r for r in active if r.state.phase in ('incident','paused')]
         self.alert.configure(text='! ' + ' · '.join(r.mission['country'] for r in faults)+' 장애 / 중단 · 대응을 선택하세요' if faults else '정상 작업은 시간 진행 버튼으로 함께 처리됩니다.')
         self.network.redraw()
+        self.overview.refresh()
 
-    def preview_plan(self):
+    def preview_plan(self, show_preview=False):
         self.resources.refresh(self.plan_var.get())
+        if show_preview:
+            self.resources.show_preview()
         plan = self.state.plans[self.plan_var.get()]
         fits = plan['gpu'] <= self.center.available_gpu() and plan['power'] <= self.center.available_power()
         editable = self.state.phase in ('ready','accepted') or (self.state.phase == 'finished' and not self.state.succeeded)
@@ -212,7 +219,7 @@ class SimulatorApp:
             button.configure(text=f'{p["label"]} — {status}', state='normal' if editable else 'disabled')
         for key in ('start','retry'):
             if key in self.action_buttons:
-                allowed = fits and self.session.plan_agreed(self.session.current, self.plan_var.get()) and (key != 'retry' or self.state.retry_count < 2)
+                allowed = fits and self.session.allocation_preview(self.session.current, self.plan_var.get())['allowed'] and (key != 'retry' or self.state.retry_count < 2)
                 self.action_buttons[key].configure(state='normal' if allowed else 'disabled')
 
     def render_actions(self):
@@ -271,6 +278,10 @@ class SimulatorApp:
             options = [('restart','같은 고객의 새 요청',self.new_mission)]
         if not self.session.can_notify_delay(self.session.current):
             options = [option for option in options if option[0] != 'delay']
+        if options:
+            self.action_frame.grid()
+        else:
+            self.action_frame.grid_remove()
         self.action_buttons = {}
         for index,(key,text,command) in enumerate(options):
             b = ActionButton(self.action_frame, text, command, accent=AMBER if key in ('fail','report','reject') else CYAN)
@@ -287,7 +298,10 @@ class SimulatorApp:
         self.refresh()
         return True
     def select_request(self, rid):
-        return self._perform(lambda: self.session.select(rid))
+        success = self._perform(lambda: self.session.select(rid))
+        if success and hasattr(self, 'resources') and not self.state.allocated:
+            self.resources.show_preview()
+        return success
     def choose_plan(self, key):
         return self._perform(lambda: self.session.choose_plan(key))
     def propose_alternative(self):
@@ -341,6 +355,8 @@ class SimulatorApp:
         if self.message_window is not None and self.message_window.winfo_exists():
             self.message_window.destroy()
         run = self.session.current
+        if not run.state.allocated:
+            self.resources.show_preview()
         confirm = None
         if (run.proposals and run.proposals[-1]['status'] == 'pending'
                 and run.request['status'] in ('new','review','waiting')):

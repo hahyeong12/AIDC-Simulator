@@ -121,7 +121,7 @@ class SessionTests(unittest.TestCase):
 
     def test_three_customers_share_capacity_and_release_in_different_order(self):
         s=self.session
-        for rid in (1,2,3): s.select(rid); start_with_consent(s, 'economy')
+        for rid in (3,1,2): s.select(rid); start_with_consent(s, 'economy')
         self.assertEqual((s.center.gpu_used,s.center.power_used),(10,9))
         for rid,usage in ((2,(8,7)),(1,(4,3)),(3,(0,0))):
             s.select(rid); s.current.state.work_done=s.current.state.work_total-1; s.advance_time(10)

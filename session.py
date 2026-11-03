@@ -6,6 +6,7 @@ import random
 
 from database import Database
 from game import DataCenter, GameState, RESPONSES, request_terms, request_conditions, game_time
+from server_resources import ServerPool, Allocation, SERVERS
 
 REQUEST_LABELS = {'new':'신규 요청','review':'검토 중','waiting':'대기',
                   'operating':'수락','rejected':'거절','completed':'처리 완료'}
@@ -30,11 +31,13 @@ class MissionRun:
     message_read_id: int = 0
     proposals: list[dict] = field(default_factory=list)
     conditions: dict = field(default_factory=dict)
+    server_allocations: list = field(default_factory=list)
 
 
 class GameSession:
     def __init__(self, db: Database, seed=None, incident_chance=None):
         self.db, self.center = db, DataCenter()
+        self.servers = ServerPool()
         self.missions = {m['id']:m for m in db.get_missions()}
         saved = db.get_simulation()
         self.minute = saved['minute'] if saved else 540
@@ -47,6 +50,7 @@ class GameSession:
         self.selected_id = None
         for request in db.get_requests():
             self.runs[request['id']] = self._load_run(request)
+        self._restore_servers()
         arrivals = saved.get('arrivals', {}) if saved else {}
         # 이전 저장 파일은 현재 시각 이후부터 새 일정을 시작하며 과거 요청을 재생성하지 않습니다.
         self.next_arrival_minute = arrivals.get('next_minute', self.minute + ARRIVAL_INTERVAL)
@@ -96,6 +100,7 @@ class GameSession:
                              message_read_id=snapshot.get('message_read_id', 0),
                              proposals=snapshot.get('proposals', []),
                              conditions=snapshot.get('conditions', {}),
+                             server_allocations=[Allocation.from_payload(a) for a in snapshot.get('server_allocations', [])],
                              delay_notice_key=snapshot.get('delay_notice_key'))
         else:
             s = GameState(center=self.center,country=mission['country'])
@@ -126,6 +131,23 @@ class GameSession:
             run.delay_notice_key = self._delay_notice_key(run)
         return run
 
+    def _restore_servers(self):
+        legacy = []
+        for run in self.runs.values():
+            if not run.state.allocated:
+                continue
+            current = next((a for a in run.server_allocations if a.playthrough_id == run.playthrough_id), None)
+            if current is not None:
+                if (current.gpu, current.power) != (run.state.gpu_used, run.state.power_used):
+                    raise ValueError('저장된 서버 배정과 작업 자원 조건이 일치하지 않습니다.')
+                self.servers.reserve(current)
+            else:
+                legacy.append((run.playthrough_id, run.state.gpu_used, run.state.power_used))
+        self.servers.restore_legacy(legacy)
+        for run in self.runs.values():
+            if run.state.allocated and not any(a.playthrough_id == run.playthrough_id for a in run.server_allocations):
+                run.server_allocations.append(self.servers.allocations[run.playthrough_id])
+
     def _persist(self):
         self.db.save_simulation({'minute':self.minute,'seed':self.seed,'roll_index':self.roll_index,
                                  'incident_chance':self.incident_chance,
@@ -137,7 +159,8 @@ class GameSession:
                                   'last_feedback':run.last_feedback,'delay_notified':run.delay_notified,
                                   'delay_notice_key':run.delay_notice_key,
                                   'terms':run.terms, 'message_read_id':run.message_read_id,
-                                  'proposals':run.proposals, 'conditions':run.conditions, 'version':2})
+                                  'proposals':run.proposals, 'conditions':run.conditions,
+                                  'server_allocations':[a.payload() for a in run.server_allocations], 'version':2})
 
     @contextmanager
     def _atomic(self):
@@ -147,6 +170,8 @@ class GameSession:
         usage = self.center.gpu_used,self.center.power_used
         clock = self.minute,self.roll_index,self.selected_id
         arrivals = self.next_arrival_minute,self.arrival_index,dict(self.arrival_last)
+        allocations = dict(self.servers.allocations)
+        histories = {rid:list(run.server_allocations) for rid, run in self.runs.items()}
         try:
             with self.db.transaction():
                 yield
@@ -157,10 +182,12 @@ class GameSession:
                 vars(run).update(fields)
                 vars(run.state).update(state)
                 run.messages, run.request = messages,request
+                run.server_allocations = histories[rid]
                 self.runs[rid] = run
             self.center.gpu_used,self.center.power_used = usage
             self.minute,self.roll_index,self.selected_id = clock
             self.next_arrival_minute,self.arrival_index,self.arrival_last = arrivals
+            self.servers.allocations = allocations
             raise
 
     def _emit(self, run, kind, text):
@@ -279,15 +306,22 @@ class GameSession:
                 shortage.append(f'{name} {needed-available}{"개" if name=="GPU" else "단위"}')
         if shortage:
             raise ValueError('자원 부족: '+' / '.join(shortage)+'. 대기하거나 다른 작업 완료를 기다리세요.')
+        parts = self.servers.plan(p['gpu'], p['power'])
+        if parts is None:
+            raise ValueError('서버별 GPU·전력의 동시 배정 조합이 성립하지 않습니다. 다른 작업 완료를 기다리세요.')
         s.choose_plan(key)
         rng = random.Random(self.seed+self.roll_index)
         self.roll_index += 1
         s.incident_at = s.work_total*rng.uniform(.35,.65) if rng.random() < self.incident_chance else None
         run.playthrough_id = self.db.create_playthrough(run.mission['id'],key)
+        allocation = Allocation(run.playthrough_id, parts)
+        self.servers.reserve(allocation)
+        run.server_allocations.append(allocation)
         if not retry:
             self.db.change_request_status(run.request['id'],'operating',run.playthrough_id)
         self._emit(run,'start',f'[고객 요청 #{run.request["id"]}] {run.mission["company_name"]} · {run.mission["title"]}')
-        self._emit(run,'allocation',f'{s.plans[key]["label"]}: GPU {s.gpu_used} / 전력 {s.power_used} 배정. 정상 실행을 시작합니다.')
+        self._emit(run,'allocation',f'{s.plans[key]["label"]}: GPU {s.gpu_used} / 전력 {s.power_used} 배정. 정상 실행을 시작합니다.\n'
+                   +'서버 배정: '+', '.join(f'{part.server_id} GPU {part.gpu}/전력 {part.power}' for part in parts))
         if run.proposals or run.conditions:
             self._emit(run,'agreed_plan',f'최종 운영 계획: {s.plans[key]["label"]} · '
                        + ('고객 동의 대안 적용' if run.proposals and key == run.proposals[-1]['proposed']['mode']
@@ -320,6 +354,22 @@ class GameSession:
         # 최초 조건이 없던 저장에는 고객 의사를 소급 추정하지 않습니다.
         return proposal is None or (key == proposal['original']['mode']
                                     and self._plan_matches(run, key, proposal['original']))
+
+    def allocation_preview(self, run, key):
+        """조회만 수행하며 실제 시작도 같은 탐색/동의 검증을 다시 적용합니다."""
+        if not self.plan_agreed(run, key):
+            return {'allowed':False, 'reason':'고객 동의 확인 필요', 'slices':None}
+        p = run.state.plans[key]
+        if p['gpu'] > self.center.available_gpu() or p['power'] > self.center.available_power():
+            return {'allowed':False, 'reason':'전체 GPU 또는 전력 부족', 'slices':None}
+        parts = self.servers.plan(p['gpu'], p['power'])
+        return {'allowed':parts is not None, 'reason':'배정 가능' if parts else '서버별 GPU·전력 조합 불가', 'slices':parts}
+
+    def allocation_summary(self, parts):
+        return '\n'.join(f'Server {s.server_id}: GPU {s.gpu} / 전력 {s.power} → '
+                         f'잔여 {next(x.gpu for x in SERVERS if x.key==s.server_id)-self.servers.usage(s.server_id)[0]-s.gpu} / '
+                         f'{next(x.power for x in SERVERS if x.key==s.server_id)-self.servers.usage(s.server_id)[1]-s.power}'
+                         for s in parts)
 
     @staticmethod
     def _plan_matches(run, key, agreed):
@@ -445,6 +495,8 @@ class GameSession:
     def _finish_if_needed(self, run):
         s = run.state
         if s.phase == 'finished' and run.request['status'] == 'operating':
+            if run.playthrough_id in self.servers.allocations:
+                self.servers.release(run.playthrough_id)
             late = 0
             if run.terms:
                 t = run.terms

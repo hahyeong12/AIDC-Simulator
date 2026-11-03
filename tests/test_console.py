@@ -28,9 +28,10 @@ class ConsoleTests(unittest.TestCase):
         app = self.app
         app.next_request()
         app.next_request()
-        for rid in (1,2,3):
+        for rid in (3,1,2):
             app.select_request(rid)
             start_legacy_plan(app, 'economy')
+        app.select_request(3)  # 압축 전 네트워크 요구량이 큰 분석 작업으로 장애 대응을 검증합니다.
         app.state.trigger_incident()
         app.refresh()
         for width, height in ((1280, 680), (1000, 650), (1840, 980)):
@@ -120,7 +121,7 @@ class ConsoleTests(unittest.TestCase):
         incoming=app.session.runs[rid]
         notice=app.arrival_notice.cget('text')
         self.assertIn(incoming.mission['company_name'],notice)
-        self.assertIn(incoming.mission['title'],notice)
+        self.assertIn(incoming.mission['title'],incoming.request['message'])
         self.assertIn(f'필요 GPU {incoming.state.plans["performance"]["gpu"]}',notice)
         self.assertIn('가용 GPU 6',notice)
         self.assertEqual(app.session.selected_id,1)

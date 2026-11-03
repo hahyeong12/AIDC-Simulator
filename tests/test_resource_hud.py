@@ -1,184 +1,104 @@
-"""Canvas HUD의 가용량·장비 상태·전력 경고·점등 타이머 검증."""
+"""Live server HUD regression tests replacing the aggregate Canvas layout."""
 import tkinter as tk
-from tkinter import font as tkfont
 import unittest
-
-from tests.support import start_with_consent, start_legacy_plan
 from database import Database
 from main import SimulatorApp
-from ui import CYAN, AMBER, RED, CUSTOMER_COLORS
-
+from tests.support import start_with_consent, start_legacy_plan
+from server_console import server_views
 
 class ResourceHudTests(unittest.TestCase):
     def setUp(self):
         try:
-            self.root = tk.Tk()
+            self.root=tk.Tk()
         except tk.TclError as exc:
             self.skipTest(str(exc))
         self.addCleanup(self.root.destroy)
-        self.db = Database(':memory:')
-        self.addCleanup(self.db.close)
-        self.app = SimulatorApp(self.root, self.db, seed=9, incident_chance=0)
-        self.app.network.stop()
-        self.panel = self.app.resources
-        self.errors = []
-        self.root.report_callback_exception = lambda *args: self.errors.append(args)
+        self.db=Database(':memory:'); self.addCleanup(self.db.close)
+        self.app=SimulatorApp(self.root,self.db,seed=9,incident_chance=0)
+        self.addCleanup(self.app.network.stop)
+        self.errors=[]; self.root.report_callback_exception=lambda *args:self.errors.append(args)
         self.root.update()
 
-    def finish_pulse(self):
-        self.root.after(350, self.root.quit)
-        self.root.mainloop()
+    def test_initial_four_racks_have_ten_available_gpu_chips(self):
+        a=self.app
+        self.assertEqual(len(a.network.find_withtag('gpu-slot')),10)
+        self.assertEqual(len(a.network.find_withtag('available-gpu')),10)
+        self.assertEqual(a.overview.values['gpu_available'],10)
+        self.assertEqual(a.overview.values['power_available'],10)
+        self.assertEqual(a.overview.values['active_servers'],0)
 
-    def test_all_available_counts_have_exactly_ten_equipment_slots(self):
-        panel, center = self.panel, self.app.center
-        for available in range(11):
-            with self.subTest(available=available):
-                center.gpu_used = 10-available
-                panel.refresh()
-                self.assertEqual(panel.gpu_numbers['available'].cget('text'), f'{available:02d}')
-                self.assertEqual(len(panel.rack.find_withtag('slot')), 10)
-                self.assertEqual(len(panel.rack.find_withtag('gpu-block')), 10)
-                self.assertEqual(len(panel.rack.find_withtag('available')), available)
-                self.assertEqual(len(panel.rack.find_withtag('used')), 10-available)
-                for item in panel.rack.find_withtag('available'):
-                    self.assertEqual(panel.rack.itemcget(item, 'fill'), CYAN)
-                self.assertTrue(all(panel.rack.itemcget(item, 'text') == 'A'
-                                    for item in panel.rack.find_withtag('available-state')))
-        self.assertEqual(self.errors, [])
+    def test_zero_available_is_healthy_allocation_not_hardware_failure(self):
+        a=self.app; a.choose_plan('performance'); a.network.select('A')
+        self.assertEqual(a.resources.view['gpu_available'],0)
+        self.assertEqual(a.resources.view['status'],'ACTIVE')
+        self.assertFalse(a.network.find_withtag('gpu-fault'))
+        self.assertEqual(a.overview.values['gpu_available'],3)
 
-    def test_available_is_largest_number_and_zero_is_a_warning(self):
-        sizes = {key:tkfont.Font(font=w.cget('font')).actual('size') for key,w in self.panel.gpu_numbers.items()}
-        self.assertGreater(sizes['available'], sizes['total'])
-        self.assertGreater(sizes['available'], sizes['used'])
-        self.app.center.gpu_used = 10
-        self.panel.refresh()
-        self.assertEqual(self.panel.gpu_numbers['available'].cget('fg'), RED)
-        title = self.panel.gpu_label
-        number = self.panel.gpu_numbers['available']
-        self.root.update()
-        self.assertLessEqual(title.winfo_y()+title.winfo_height(), number.winfo_y())
+    def test_actual_allocation_and_return_restore_only_owned_modules(self):
+        a=self.app; start_with_consent(a,'economy')
+        self.assertEqual(len(a.network.find_withtag('gpu-busy')),4)
+        a.state.work_done=a.state.work_total-1; a.advance_time(10)
+        self.assertEqual(len(a.network.find_withtag('gpu-busy')),0)
+        self.assertEqual(a.overview.values['gpu_available'],10)
+        self.assertTrue(all(not v['owners'] for v in server_views(a.session)))
 
-    def test_actual_allocation_and_return_dim_and_relight_equipment(self):
-        app, panel = self.app, self.panel
-        start_with_consent(app, 'economy')
-        self.assertEqual(panel.gpu_numbers['available'].cget('text'), '06')
-        self.assertEqual(len(panel.rack.find_withtag('available')), 6)
-        self.assertEqual(len(panel.rack.find_withtag('used')), 4)
-        self.assertEqual([panel.rack.itemcget(item, 'text') for item in panel.rack.find_withtag('used-state')], ['S']*4)
-        self.assertIsNotNone(panel.pulse_timer)
-        self.finish_pulse()
-        self.assertIsNone(panel.pulse_timer)
-        app.state.work_done = app.state.work_total-1
-        app.advance_time(10)
-        self.assertEqual(panel.gpu_numbers['available'].cget('text'), '10')
-        self.assertEqual(len(panel.rack.find_withtag('available')), 10)
-        self.assertTrue(panel.changed_slots)
-        self.finish_pulse()
-        self.assertFalse(panel.changed_slots)
-        self.assertEqual(self.errors, [])
+    def test_customer_ownership_and_untouched_slot_positions_survive_return(self):
+        a=self.app; a.next_request(); a.next_request()
+        for rid in (3,1,2):
+            a.select_request(rid); start_legacy_plan(a,'economy')
+        self.assertEqual(a.overview.values['jobs'],3)
+        before={v['spec'].key:[o['playthrough_id'] if o else None for o in v['slots']] for v in server_views(a.session)}
+        a.select_request(2); pid=a.playthrough_id
+        a.state.work_done=a.state.work_total-1; a.advance_time(10)
+        for v in server_views(a.session):
+            after=[o['playthrough_id'] if o else None for o in v['slots']]
+            self.assertEqual(after,[None if x==pid else x for x in before[v['spec'].key]])
+        self.assertEqual(a.overview.values['gpu_available'],2)
 
-    def test_customer_leds_and_selected_owner_are_distinct_from_available(self):
-        app, panel = self.app, self.panel
-        app.next_request()
-        app.next_request()
-        for rid in (1, 2, 3):
-            app.select_request(rid)
-            start_legacy_plan(app, 'economy')
-        app.select_request(2)
-        self.assertEqual(len(panel.rack.find_withtag('selected-owner')), 2)
-        self.assertEqual([panel.rack.itemcget(item, 'text') for item in panel.rack.find_withtag('used-state')],
-                         ['S']*4+['J']*2+['U']*4)
-        for color, count in zip(CUSTOMER_COLORS, (4, 2, 4)):
-            self.assertEqual(sum(panel.rack.itemcget(item, 'fill') == color for item in panel.rack.find_withtag('used')), count)
-        self.assertEqual(panel.preview_title.cget('text'), '현재 작업 점유 자원')
-        self.assertFalse(panel.rack.find_withtag('request-marker'))
-        positions = list(panel.slot_owners)
-        app.select_request(1)
-        app.state.work_done = app.state.work_total-1
-        app.advance_time(10)
-        self.assertEqual(panel.slot_owners[:4], [None]*4)
-        self.assertEqual(panel.slot_owners[4:], positions[4:])
-        app.select_request(1)
-        self.assertEqual(panel.gpu_numbers['available'].cget('text'), '04')
+    def test_battery_displays_available_power_from_server_sum(self):
+        a=self.app; a.choose_plan('performance')
+        views=server_views(a.session)
+        self.assertEqual(a.overview.values['power_available'],sum(v['power_available'] for v in views))
+        for v in views:
+            a.network.select(v['spec'].key)
+            self.assertEqual(a.resources.inspector.values['power_used'],v['power_used'])
+            percent=a.resources.inspector.find_withtag('battery-percent')[0]
+            self.assertIn(str(round(v['power_available']/v['spec'].power*100)),a.resources.inspector.itemcget(percent,'text'))
 
-    def test_power_changes_colour_at_high_load_and_supply_limit(self):
-        for used in range(11):
-            with self.subTest(used=used):
-                self.app.center.power_used = used
-                self.panel.refresh()
-                item = self.panel.power.find_withtag('power-used')[0]
-                self.assertEqual(self.panel.power.itemcget(item, 'fill'), RED if used == 10 else AMBER if used >= 7 else CYAN)
-                self.assertIn(f'사용 {used} / 가용 {10-used} / 총 10', self.panel.power_label.cget('text'))
-                total = self.panel.power.coords(self.panel.power.find_withtag('power-total')[0])[2]
-                self.assertAlmostEqual(self.panel.power.coords(item)[2]/total, used/10)
+    def test_assignment_preview_never_reserves_server_slots(self):
+        a=self.app
+        before=dict(a.session.servers.allocations)
+        for key in ('performance','economy'):
+            a.plan_var.set(key); a.preview_plan(show_preview=True)
+        self.assertEqual(a.session.servers.allocations,before)
+        self.assertEqual(a.action_buttons['start'].cget('state'),'disabled')
+        self.assertEqual(a.center.gpu_used,0)
 
-    def test_request_markers_and_warning_never_allocate_resources(self):
-        app, panel = self.app, self.panel
-        app.next_request()
-        app.next_request()
-        app.select_request(3)
-        start_with_consent(app, 'economy')
-        app.select_request(1)
-        before = (app.center.gpu_used, app.center.power_used, len(self.db.get_recent_records()))
-        self.assertEqual(len(panel.rack.find_withtag('request-marker')), 6)
-        self.assertEqual(panel.preview_frame.cget('highlightbackground'), RED)
-        self.assertIn('GPU 7 필요 / 가용 6 → 부족 1', panel.preview.cget('text'))
-        self.assertIn('고성능 모드 배정 불가', panel.preview.cget('text'))
-        app.plan_var.set('economy')
-        app.preview_plan()
-        self.assertEqual(len(panel.rack.find_withtag('request-marker')), 4)
-        self.assertIn('→ 잔여 2', panel.preview.cget('text'))
-        self.assertEqual((app.center.gpu_used, app.center.power_used, len(self.db.get_recent_records())), before)
+    def test_refresh_does_not_add_gpu_items_or_timers(self):
+        a=self.app; start_with_consent(a,'economy'); timer=a.network.timer
+        items=len(a.network.find_all())
+        for _ in range(100):
+            a.network.redraw(); a.resources.refresh()
+        self.assertEqual(len(a.network.find_all()),items)
+        self.assertEqual(a.network.timer,timer)
+        self.assertEqual(self.root.tk.call('after','info').count(timer),1)
+        self.assertEqual(self.errors,[])
 
-    def test_repeated_refresh_and_mode_switch_do_not_add_animation_timers(self):
-        panel = self.panel
-        start_with_consent(self.app, 'economy')
-        timer = panel.pulse_timer
-        items, children = len(panel.rack.find_all()), len(panel.rack.winfo_children())
-        for _ in range(250):
-            panel.refresh('economy')
-            panel.refresh('performance')
-        self.assertEqual(panel.pulse_timer, timer)
-        self.assertEqual(len(panel.rack.find_all()), items)
-        self.assertEqual(len(panel.rack.winfo_children()), children)
-        self.finish_pulse()
-        self.assertIsNone(panel.pulse_timer)
-        self.assertNotIn(timer, self.root.tk.call('after', 'info'))
-        self.assertEqual(self.errors, [])
+    def test_usage_change_and_stop_do_not_leak_animation_callbacks(self):
+        a=self.app; timer=a.network.timer
+        a.choose_plan('performance'); a.network.stop()
+        self.assertIsNone(a.network.timer)
+        self.assertNotIn(timer,self.root.tk.call('after','info'))
+        a.network.start(); current=a.network.timer; a.network.start()
+        self.assertEqual(a.network.timer,current)
 
-    def test_new_usage_cancels_previous_pulse_and_destroy_cancels_last_timer(self):
-        panel = self.panel
-        start_legacy_plan(self.app, 'economy')
-        previous = panel.pulse_timer
-        self.app.next_request()
-        self.app.select_request(2)
-        start_legacy_plan(self.app, 'economy')
-        self.assertNotEqual(panel.pulse_timer, previous)
-        self.assertNotIn(previous, self.root.tk.call('after', 'info'))
-        timer = panel.pulse_timer
-        panel.destroy()
-        self.root.update()
-        self.assertNotIn(timer, self.root.tk.call('after', 'info'))
-        self.assertEqual(self.errors, [])
-
-    def test_hud_fits_laptop_and_minimum_window_without_small_numeric_labels(self):
-        app, panel = self.app, self.panel
-        for width, height in ((1366,768), (1280,680), (1000,650)):
-            self.root.geometry(f'{width}x{height}')
-            self.root.update()
-            self.assertEqual(len(panel.rack.find_withtag('slot')), 10)
-            for widget in (panel.rack, panel.power, panel.preview, panel.preview_frame,
-                           *panel.gpu_numbers.values(), *app.action_buttons.values()):
-                with self.subTest(size=(width,height), widget=str(widget)):
-                    self.assertLessEqual(widget.winfo_rootx()+widget.winfo_width(), self.root.winfo_rootx()+width)
-                    self.assertLessEqual(widget.winfo_rooty()+widget.winfo_height(), self.root.winfo_rooty()+height)
-            self.assertGreaterEqual(panel.preview.winfo_height(), panel.preview.winfo_reqheight())
-            for canvas in (panel.rack, panel.power):
-                for item in canvas.find_all():
-                    if canvas.type(item) == 'text':
-                        self.assertGreaterEqual(tkfont.Font(font=canvas.itemcget(item,'font')).actual('size'), 10)
-        self.assertEqual(self.errors, [])
-
-
-if __name__ == '__main__':
-    unittest.main()
+    def test_hud_fits_laptop_and_minimum_window(self):
+        a=self.app
+        for size,cols in (('1000x650',2),('1280x680',4),('1366x768',4)):
+            self.root.geometry(size);self.root.update()
+            self.assertEqual(a.network.columns,cols)
+            for widget in (a.overview,a.network,a.resources,a.action_hint,*a.action_buttons.values(),*a.time_buttons.values()):
+                self.assertLessEqual(widget.winfo_rootx()+widget.winfo_width(),self.root.winfo_rootx()+self.root.winfo_width())
+                self.assertLessEqual(widget.winfo_rooty()+widget.winfo_height(),self.root.winfo_rooty()+self.root.winfo_height())
+            self.assertEqual(len(a.network.find_withtag('gpu-slot')),10)
+        self.assertEqual(self.errors,[])

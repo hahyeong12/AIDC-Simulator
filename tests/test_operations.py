@@ -184,7 +184,7 @@ class OperationTests(unittest.TestCase):
                 s=GameSession(db,seed=3,incident_chance=.5)
                 for _ in range(2): s.deliver_next_request()
                 values=[]
-                for rid in (1,2,3):
+                for rid in (3,1,2):
                     s.select(rid); start_legacy_plan(s, 'economy'); values.append(s.current.state.incident_at)
                 sequences.append(values)
             finally: db.close()

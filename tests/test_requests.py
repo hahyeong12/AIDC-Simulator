@@ -226,7 +226,7 @@ class RequestTests(unittest.TestCase):
     def test_three_active_jobs_restore_shared_capacity_and_complete_independently(self):
         self.s.deliver_next_request()
         self.s.deliver_next_request()
-        for rid in (1, 2, 3):
+        for rid in (3, 1, 2):
             self.s.select(rid)
             start_legacy_plan(self.s, 'economy')
         restored_db = Database(":memory:")

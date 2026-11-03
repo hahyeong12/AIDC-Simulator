@@ -233,32 +233,15 @@ class UsabilityGuiTests(unittest.TestCase):
         self.assertNotIn('delay', app.action_buttons)
 
     def test_gpu_blocks_and_power_gauge_match_three_customers(self):
-        app = self.app
-        app.next_request()
-        app.next_request()
-        for rid in (1, 2, 3):
-            app.select_request(rid)
-            start_legacy_plan(app, 'economy')
-        panel = app.resources
-        self.assertEqual([int(panel.gpu_numbers[k].cget('text')) for k in ('total','used','available')], [10,10,0])
-        self.assertEqual(len(panel.rack.find_withtag('gpu-block')), 10)
-        self.assertEqual(len(panel.rack.find_withtag('used')), 10)
-        colors = [panel.rack.itemcget(block, 'fill') for block in panel.rack.find_withtag('gpu-block')]
-        for color, count in zip(CUSTOMER_COLORS, (4, 2, 4)):
-            self.assertEqual(colors.count(color), count)
-        self.assertEqual([w.cget('text') for w in panel.legend_labels], ['■ SG 4','■ JP 2','■ US 4'])
-        self.assertIn('사용 9 / 가용 1 / 총 10', panel.power_label.cget('text'))
-        total = panel.power.coords(panel.power.find_withtag('power-total')[0])[2]
-        used = panel.power.coords(panel.power.find_withtag('power-used')[0])[2]
-        self.assertAlmostEqual(used/total, .9)
-        app.select_request(2)
-        app.state.work_done = app.state.work_total-1
-        app.advance_time(10)
-        self.assertEqual(len(panel.rack.find_withtag('available')), 2)
-        for block in panel.rack.find_withtag('available'):
-            self.assertEqual(panel.rack.itemcget(block, 'fill'), CUSTOMER_COLORS[0])
-        self.assertEqual(panel.gpu_numbers['used'].cget('text'), '8')
-        self.assertIn('사용 7 / 가용 3', panel.power_label.cget('text'))
+        app=self.app;app.next_request();app.next_request()
+        for rid in (3,1,2):
+            app.select_request(rid);start_legacy_plan(app,'economy')
+        self.assertEqual((app.overview.values['gpu_available'],app.overview.values['power_available']),(0,1))
+        self.assertEqual(len(app.network.find_withtag('gpu-busy')),10)
+        app.select_request(2);app.state.work_done=app.state.work_total-1;app.advance_time(10)
+        self.assertEqual(app.overview.values['gpu_available'],2)
+        self.assertEqual(app.overview.values['power_available'],3)
+        self.assertEqual(len(app.network.find_withtag('available-gpu')),2)
 
     def test_preview_shortage_and_exact_remaining_change_without_allocating(self):
         app = self.app
@@ -304,32 +287,21 @@ class UsabilityGuiTests(unittest.TestCase):
         self.assertIn('자원 반환 완료', app.resources.preview.cget('text'))
 
     def test_laptop_and_minimum_layout_show_complete_resource_text_and_controls(self):
-        app = self.app
-        # OS 테두리와 작업 표시줄을 뺀 노트북 작업 영역 및 기존 최소 크기입니다.
+        app=self.app
         for state in ('pending','running','incident','recovering','finished'):
-            if state == 'running':
-                app.choose_plan('performance')
-            elif state == 'incident':
-                app.state.trigger_incident()
-                app.refresh()
-            elif state == 'recovering':
-                app.respond('reroute')
-            elif state == 'finished':
-                app.state.work_done = app.state.work_total-1
-                app.advance_time(30)
-            for width, height in ((1366, 768), (1280, 680), (1000, 650)):
-                with self.subTest(state=state, size=(width,height)):
-                    self.root.geometry(f'{width}x{height}')
-                    self.root.update()
-                    panel = app.resources
-                    for widget in (panel.preview, panel.preview_title, panel.rack, panel.power,
-                                   *panel.gpu_numbers.values(), app.action_hint,
-                                   *app.action_buttons.values(), *app.time_buttons.values()):
-                        self.assertLessEqual(widget.winfo_rootx()+widget.winfo_width(), self.root.winfo_rootx()+self.root.winfo_width())
-                        self.assertLessEqual(widget.winfo_rooty()+widget.winfo_height(), self.root.winfo_rooty()+self.root.winfo_height())
-                    self.assertGreaterEqual(panel.preview.winfo_height(), panel.preview.winfo_reqheight())
-                    self.assertFalse(hasattr(app, 'scroll'))
-        self.assertEqual(self.errors, [])
+            if state=='running':app.choose_plan('performance')
+            elif state=='incident':app.state.trigger_incident();app.refresh()
+            elif state=='recovering':app.respond('reroute')
+            elif state=='finished':app.state.work_done=app.state.work_total-1;app.advance_time(30)
+            for width,height in ((1366,768),(1280,680),(1000,650)):
+                self.root.geometry(f'{width}x{height}');app.resources.show_preview();self.root.update()
+                for widget in (app.resources.preview,app.resources.preview_title,app.network,app.overview,
+                               app.action_hint,*app.action_buttons.values(),*app.time_buttons.values()):
+                    self.assertLessEqual(widget.winfo_rootx()+widget.winfo_width(),self.root.winfo_rootx()+width)
+                    self.assertLessEqual(widget.winfo_rooty()+widget.winfo_height(),self.root.winfo_rooty()+height)
+                self.assertGreaterEqual(app.resources.preview.winfo_height(),app.resources.preview.winfo_reqheight())
+                self.assertFalse(hasattr(app,'scroll'))
+        self.assertEqual(self.errors,[])
 
 
 if __name__ == '__main__':
