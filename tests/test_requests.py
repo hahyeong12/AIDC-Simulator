@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.support import start_with_consent, start_legacy_plan
 from database import Database
 from session import GameSession
 from test_operations import finish_current
@@ -46,7 +47,7 @@ class RequestTests(unittest.TestCase):
         self.assertEqual((s.center.gpu_used, s.center.power_used), (0, 0))
         s.select(1)
         self.assertEqual(s.current.request["status"], "waiting")
-        s.choose_plan("economy")
+        start_with_consent(s, 'economy')
         self.assertEqual(s.current.request["status"], "operating")
         self.assertEqual(s.current.request["playthrough_id"], s.current.playthrough_id)
         s.current.state.trigger_incident(); s.respond("compress"); finish_current(s)
@@ -66,7 +67,7 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(self.db.get_recent_records(), [])
         self.assertEqual(self.s.center.gpu_used, 0)
         with self.assertRaises(ValueError):
-            self.s.choose_plan("economy")
+            start_with_consent(self.s, 'economy')
 
     def test_wait_then_reject_custom_reason(self):
         self.s.wait_request()
@@ -75,7 +76,7 @@ class RequestTests(unittest.TestCase):
         self.assertIn("범위 확인", self.db.get_request(1)["rejection_reason"])
 
     def test_duplicate_acceptance_does_not_double_allocate(self):
-        self.s.choose_plan("economy")
+        start_with_consent(self.s, 'economy')
         run_id = self.s.current.playthrough_id
         with self.assertRaises(ValueError):
             self.s.choose_plan("performance")
@@ -101,17 +102,17 @@ class RequestTests(unittest.TestCase):
         for method in ("create_playthrough", "change_request_status", "add_log", "get_request"):
             with self.subTest(method=method), patch.object(self.db, method, side_effect=sqlite3.OperationalError("실패")):
                 with self.assertRaises(sqlite3.OperationalError):
-                    self.s.choose_plan("economy")
+                    start_with_consent(self.s, 'economy')
             self.assertEqual(self.s.current.request["status"], "waiting")
             self.assertEqual(self.db.get_request(1)["status"], "waiting")
             self.assertEqual(self.s.current.state.phase, "ready")
             self.assertIsNone(self.s.current.playthrough_id)
             self.assertEqual(self.s.center.gpu_used, 0)
             self.assertEqual(self.db.get_recent_records(), [])
-        self.s.choose_plan("economy")
+        start_with_consent(self.s, 'economy')
 
     def test_completion_request_save_failure_restores_operating_job(self):
-        self.s.choose_plan("economy")
+        start_with_consent(self.s, 'economy')
         self.s.current.state.work_done=self.s.current.state.work_total-1
         with patch.object(self.db, "change_request_status", side_effect=sqlite3.OperationalError("실패")):
             with self.assertRaises(sqlite3.OperationalError):
@@ -121,7 +122,7 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(self.s.current.state.phase, "running")
         self.assertEqual(self.s.center.gpu_used, 4)
         self.assertEqual(self.db.get_recent_results(), [])
-        self.assertEqual(len(self.db.get_logs(self.s.current.playthrough_id)), 3)  # 시작·배정·고객 확인
+        self.assertEqual(len(self.db.get_logs(self.s.current.playthrough_id)), 4)  # 시작·배정·동의 계획·고객 확인
 
     def test_decision_read_and_arrival_failures_do_not_update_memory(self):
         for action in (self.s.wait_request, lambda: self.s.reject_request("자원 부족")):
@@ -168,7 +169,7 @@ class RequestTests(unittest.TestCase):
         self.s.wait_request()
         self.s.deliver_next_request()
         self.s.select(2)
-        self.s.choose_plan("economy")
+        start_legacy_plan(self.s, 'economy')
         self.s.save()
         self.assertEqual(self.db.get_request(1)["status"], "waiting")
         self.assertEqual(self.db.get_request(2)["status"], "operating")
@@ -207,7 +208,7 @@ class RequestTests(unittest.TestCase):
         self.s.wait_request()
         self.s.deliver_next_request()
         self.s.select(3)
-        self.s.choose_plan("economy")
+        start_with_consent(self.s, 'economy')
         self.s.current.state.trigger_incident(); self.s.respond("reroute"); finish_current(self.s)
         restored_db = Database(":memory:")
         self.addCleanup(restored_db.close)
@@ -227,7 +228,7 @@ class RequestTests(unittest.TestCase):
         self.s.deliver_next_request()
         for rid in (1, 2, 3):
             self.s.select(rid)
-            self.s.choose_plan("economy")
+            start_legacy_plan(self.s, 'economy')
         restored_db = Database(":memory:")
         self.addCleanup(restored_db.close)
         self.db.conn.backup(restored_db.conn)

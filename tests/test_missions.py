@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from tests.support import start_with_consent
 from database import Database
 from main import SimulatorApp
 from test_operations import finish_current
@@ -122,7 +123,7 @@ class MissionSelectionTests(unittest.TestCase):
 
     def test_in_progress_switch_preserves_original_mission(self):
         app = self.app
-        app.choose_plan("economy")
+        start_with_consent(app, 'economy')
         state, run_id = app.state, app.playthrough_id
         app.select_request(2)
         self.assertEqual(app.state.phase, "ready")
@@ -140,6 +141,7 @@ class MissionSelectionTests(unittest.TestCase):
         # 새 요청의 순차 운영 지연 감점은 test_balance에서 검증합니다.
         for run in app.session.runs.values():
             run.terms = {}
+            run.conditions = {}  # 기한과 최초 조건 도입 전의 점수/자원 반환 회귀
         outcomes = [("economy", "compress", "성공", 85),
                     ("performance", "compress", "성공", 95),
                     ("performance", "reroute", "성공", 90)]

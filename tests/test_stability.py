@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from tests.support import start_with_consent
 from database import Database
 from game import DataCenter, GameState
 from main import SimulatorApp
@@ -165,6 +166,8 @@ class AppFlowTests(unittest.TestCase):
         self.addCleanup(self.app.db.close)
         self.app.session = GameSession(self.app.db, incident_chance=0)
         self.app.session.deliver_next_request(); self.app.session.deliver_next_request()
+        # 일본 절약형을 쓰는 이전 버전의 자원/실패 복구 시나리오를 보존합니다.
+        self.app.session.runs[2].conditions = {}
         self.app.center = self.app.session.center
         self.app.refresh = Mock()
         patcher = patch("main.messagebox")
@@ -173,8 +176,8 @@ class AppFlowTests(unittest.TestCase):
 
     def test_other_mission_start_finish_and_new_mission(self):
         a=self.app
-        a.select_request(2); a.choose_plan("economy")
-        a.select_request(1); a.choose_plan("economy")
+        a.select_request(2); start_with_consent(a, 'economy')
+        a.select_request(1); start_with_consent(a, 'economy')
         a.state.work_done=a.state.work_total-1
         a.advance_time(10); a.new_mission()
         self.assertEqual(a.center.gpu_used,2)
@@ -185,14 +188,14 @@ class AppFlowTests(unittest.TestCase):
 
     def test_other_customer_can_finish_during_mission(self):
         a=self.app
-        a.choose_plan("economy"); a.select_request(2); a.choose_plan("performance")
+        start_with_consent(a, 'economy'); a.select_request(2); a.choose_plan("performance")
         a.advance_time(60)
         self.assertEqual(a.center.gpu_used,4)
         a.select_request(1); finish_current(a.session)
         self.assertEqual(a.center.gpu_used,0)
 
     def test_new_mission_cannot_discard_active_allocation(self):
-        a=self.app; a.choose_plan("economy")
+        a=self.app; start_with_consent(a, 'economy')
         state,run_id=a.state,a.playthrough_id
         a.new_mission()
         self.assertIs(a.state,state)
@@ -201,19 +204,19 @@ class AppFlowTests(unittest.TestCase):
         self.messages.showerror.assert_called_once()
 
     def test_start_save_failure_restores_state_and_allows_retry(self):
-        a=self.app; a.select_request(2); a.choose_plan("economy"); a.select_request(1)
+        a=self.app; a.select_request(2); start_with_consent(a, 'economy'); a.select_request(1)
         for method in ("create_playthrough","add_log"):
             with patch.object(a.db,method,side_effect=sqlite3.OperationalError("실패")):
-                a.choose_plan("economy")
+                start_with_consent(a, 'economy')
             self.assertEqual(a.state.phase,"ready")
             self.assertIsNone(a.playthrough_id)
             self.assertEqual(a.center.gpu_used,2)
             self.assertEqual(len(a.db.get_recent_records()),1)
-        a.choose_plan("economy")
+        start_with_consent(a, 'economy')
         self.assertEqual(a.state.phase,"running")
 
     def test_result_save_failure_restores_allocation_and_allows_retry(self):
-        a=self.app; a.select_request(2); a.choose_plan("economy"); a.select_request(1); a.choose_plan("economy")
+        a=self.app; a.select_request(2); start_with_consent(a, 'economy'); a.select_request(1); start_with_consent(a, 'economy')
         a.state.work_done=a.state.work_total-1
         for method in ("add_log","save_result"):
             with patch.object(a.db,method,side_effect=sqlite3.OperationalError("실패")):
@@ -236,14 +239,14 @@ class AppFlowTests(unittest.TestCase):
                 if calls==2: raise sqlite3.OperationalError("두 번째 로그 실패")
                 original(*args)
             return write
-        with patch.object(a.db,"add_log",side_effect=failing()): a.choose_plan("economy")
+        with patch.object(a.db,"add_log",side_effect=failing()): start_with_consent(a, 'economy')
         self.assertEqual(len(a.db.get_recent_records()),0)
         self.assertEqual(a.state.phase,"ready")
-        a.choose_plan("economy"); a.state.work_done=a.state.work_total-1
+        start_with_consent(a, 'economy'); a.state.work_done=a.state.work_total-1
         a.refresh.reset_mock()
         with patch.object(a.db,"add_log",side_effect=failing()): a.advance_time(10)
         self.assertEqual(a.state.phase,"running")
-        self.assertEqual(len(a.db.get_logs(a.playthrough_id)),3)
+        self.assertEqual(len(a.db.get_logs(a.playthrough_id)),4)
         a.refresh.assert_not_called()
         a.advance_time(10)
         self.assertEqual(a.center.gpu_used,0)

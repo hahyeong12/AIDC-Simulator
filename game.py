@@ -101,6 +101,17 @@ def request_terms(country, minute):
             'due': minute+due, 'expires': minute+expiry, 'alerts': []}
 
 
+def request_conditions(mission, due):
+    """신규 접수 때만 고객 의사와 자원 조건을 고정합니다. 과거 요청에는 적용하지 않습니다."""
+    # 긴급 추론과 지정 환경의 학습은 고성능 요청, 배치 분석은 두 환경을 허용합니다.
+    flexible = mission['country'] == '미국'
+    return {'type': 'flexible' if flexible else 'fixed', 'task': mission['title'],
+            'requested_mode': 'performance',
+            'allowed_modes': ['performance', 'economy'] if flexible else ['performance'],
+            'plans': {key: dict(plan, mode=key) for key, plan in plans_for(mission['country']).items()},
+            'due': due}
+
+
 @dataclass
 class GameState:
     """요청과 독립적인 작업 상태. 모든 시간/속도/비용 수치는 교육용 가상 설정입니다."""

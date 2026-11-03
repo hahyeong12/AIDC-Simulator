@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.support import start_with_consent, start_legacy_plan
 from database import Database
 from session import GameSession
 
@@ -30,14 +31,14 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(self.s.current.state.phase,'accepted')
         self.assertEqual(self.s.center.gpu_used,0)
         self.assertEqual(self.db.get_recent_records(),[])
-        self.s.choose_plan('economy')
+        start_with_consent(self.s, 'economy')
         self.assertEqual(self.s.current.state.phase,'running')
         self.assertEqual(self.s.current.state.network_available,8)
         self.assertEqual(self.s.current.state.progress,0)
 
     def test_time_and_progress_then_success_releases_only_own_resources(self):
         s=self.s
-        s.choose_plan('economy')
+        start_with_consent(s, 'economy')
         first=s.current
         s.deliver_next_request(); s.select(2); s.choose_plan('performance')
         s.advance_time(30)
@@ -61,7 +62,7 @@ class OperationTests(unittest.TestCase):
 
     def test_fault_pauses_only_one_job_and_backup_resumes_after_delay(self):
         s=self.s
-        s.choose_plan('economy')
+        start_with_consent(s, 'economy')
         first=s.current
         first.state.incident_at=7
         s.deliver_next_request(); s.select(2); s.choose_plan('performance')
@@ -93,7 +94,7 @@ class OperationTests(unittest.TestCase):
         self.assertTrue(s.current.state.succeeded)
 
     def test_timeout_records_failure_and_customer_followup(self):
-        self.s.choose_plan('economy'); self.s.current.state.trigger_incident()
+        start_with_consent(self.s, 'economy'); self.s.current.state.trigger_incident()
         self.s.advance_time(60)
         self.assertFalse(self.s.current.state.succeeded)
         self.assertEqual(self.s.center.gpu_used,0)
@@ -101,7 +102,9 @@ class OperationTests(unittest.TestCase):
         self.assertIn('복구',self.s.current.last_feedback)
 
     def test_retry_preserves_failure_and_links_new_attempt_with_cost(self):
-        s=self.s; s.choose_plan('performance'); s.current.state.trigger_incident()
+        s=self.s
+        s.propose_alternative(); self.assertTrue(s.review_alternative())
+        s.choose_plan('performance'); s.current.state.trigger_incident()
         s.respond('ignore')
         s.notify_delay()
         for _ in range(2): s.respond('ignore')
@@ -123,10 +126,10 @@ class OperationTests(unittest.TestCase):
         self.assertLess(s.current.state.score,95)
 
     def test_retry_limit_and_final_report_never_overwrite_failed_result(self):
-        s=self.s; s.choose_plan('economy'); s.report_failure()
+        s=self.s; start_with_consent(s, 'economy'); s.report_failure()
         # 보고로 닫힌 요청은 재처리하지 않습니다.
         with self.assertRaises(ValueError): s.retry('economy')
-        s.restart(); s.choose_plan('economy')
+        s.restart(); start_with_consent(s, 'economy')
         for attempt in range(3):
             s.current.state.trigger_incident() if s.current.state.phase=='running' else None
             if s.current.state.phase=='recovering': s.advance_time(30); s.current.state.trigger_incident()
@@ -140,7 +143,7 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(tuple(self.db.get_playthrough(run_id)),before)
 
     def test_time_save_failure_rolls_back_every_job_clock_arrivals_and_events(self):
-        s=self.s; s.choose_plan('economy')
+        s=self.s; start_with_consent(s, 'economy')
         state=s.current.state
         with patch.object(self.db,'save_runtime',side_effect=sqlite3.OperationalError('실패')):
             with self.assertRaises(sqlite3.OperationalError): s.advance_time(60)
@@ -164,7 +167,7 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(s.current.state.phase,'finished')
 
     def test_retry_link_failure_restores_original_failed_job(self):
-        s=self.s; s.choose_plan('economy'); s.current.state.trigger_incident(); s.advance_time(60)
+        s=self.s; start_with_consent(s, 'economy'); s.current.state.trigger_incident(); s.advance_time(60)
         state,run_id=s.current.state,s.current.playthrough_id
         with patch.object(self.db,'link_retry',side_effect=sqlite3.OperationalError('실패')):
             with self.assertRaises(sqlite3.OperationalError): s.retry('performance')
@@ -182,7 +185,7 @@ class OperationTests(unittest.TestCase):
                 for _ in range(2): s.deliver_next_request()
                 values=[]
                 for rid in (1,2,3):
-                    s.select(rid); s.choose_plan('economy'); values.append(s.current.state.incident_at)
+                    s.select(rid); start_legacy_plan(s, 'economy'); values.append(s.current.state.incident_at)
                 sequences.append(values)
             finally: db.close()
         self.assertEqual(sequences[0],sequences[1])
@@ -193,7 +196,7 @@ class OperationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/'resume.db'
             db=Database(path); s=GameSession(db,seed=10,incident_chance=0)
-            s.choose_plan('economy'); s.advance_time(30)
+            start_with_consent(s, 'economy'); s.advance_time(30)
             run_id=s.current.playthrough_id; s.close()
             db=Database(path)
             try:
@@ -207,7 +210,7 @@ class OperationTests(unittest.TestCase):
             finally: db.close()
 
     def test_delay_notice_and_operational_phase_are_saved(self):
-        s=self.s; s.choose_plan('economy'); s.current.state.trigger_incident(); s.respond('ignore'); s.notify_delay()
+        s=self.s; start_with_consent(s, 'economy'); s.current.state.trigger_incident(); s.respond('ignore'); s.notify_delay()
         copy=Database(':memory:'); self.addCleanup(copy.close); self.db.conn.backup(copy.conn)
         restored=GameSession(copy)
         self.assertEqual(restored.current.state.phase,'paused')
@@ -221,7 +224,7 @@ class OperationTests(unittest.TestCase):
             db=Database(':memory:')
             try:
                 s=GameSession(db,seed=1,incident_chance=1)
-                s.choose_plan('economy')
+                start_with_consent(s, 'economy')
                 for minutes in steps: s.advance_time(minutes)
                 outcomes.append((s.minute,s.current.state.work_done,s.current.state.phase,
                                  s.current.state.downtime,len(s.runs),s.center.gpu_used))
@@ -243,12 +246,12 @@ class OperationTests(unittest.TestCase):
         self.assertIn('v0.5',s.current.messages[0])
 
     def test_resume_retains_seed_and_next_incident_draw(self):
-        self.s.choose_plan('economy')
+        start_legacy_plan(self.s, 'economy')
         copy=Database(':memory:'); self.addCleanup(copy.close)
         self.db.conn.backup(copy.conn)
         restored=GameSession(copy,seed=999,incident_chance=1)
         for session in (self.s,restored):
-            session.deliver_next_request(); session.select(2); session.choose_plan('economy')
+            session.deliver_next_request(); session.select(2); start_legacy_plan(session, 'economy')
         self.assertEqual(restored.seed,self.s.seed)
         self.assertEqual(restored.roll_index,self.s.roll_index)
         self.assertEqual(restored.current.state.incident_at,self.s.current.state.incident_at)

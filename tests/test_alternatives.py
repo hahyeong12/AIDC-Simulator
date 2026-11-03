@@ -160,16 +160,17 @@ class AlternativeTests(unittest.TestCase):
                 action()
         self.assertEqual(len(self.s.current.proposals), 1)
 
-    def test_rejected_proposals_keep_separate_history(self):
+    def test_rejected_proposal_is_preserved_and_renegotiation_is_blocked(self):
         self.s.deliver_next_request()
         self.s.select(2)
         self.s.propose_alternative()
         self.s.review_alternative()
         first = deepcopy(self.s.current.proposals[0])
         self.s.advance_time(10)
-        self.s.propose_alternative()
+        with self.assertRaises(ValueError):
+            self.s.propose_alternative()
         self.assertEqual(self.s.current.proposals[0], first)
-        self.assertEqual(self.s.current.proposals[1]['status'], 'pending')
+        self.assertEqual(len(self.s.current.proposals), 1)
 
     def test_only_pending_requests_can_negotiate_and_expiry_is_preserved(self):
         self.s.propose_alternative()
@@ -304,12 +305,15 @@ class AlternativePersistenceTests(unittest.TestCase):
             path = Path(folder) / 'legacy.db'
             db = Database(path)
             s = GameSession(db, seed=9, incident_chance=0)
+            # v0.6 저장은 최초 고객 조건과 협의 이력이 없었습니다.
+            s.current.conditions = {}
             s.choose_plan('economy')
             for _ in range(3):
                 s.advance_time(60)
             for rid in s.runs:
                 payload = db.get_runtime(rid)
                 payload.pop('proposals')
+                payload.pop('conditions')
                 db.save_runtime(rid, s.runs[rid].playthrough_id, payload)
             schema = list(map(tuple, db.conn.execute('SELECT name,sql FROM sqlite_master ORDER BY name')))
             tables = ('clients', 'missions', 'playthroughs', 'event_logs', 'customer_requests', 'request_events', 'retry_links')

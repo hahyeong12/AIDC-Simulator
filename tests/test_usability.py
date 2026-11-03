@@ -5,6 +5,7 @@ import tkinter as tk
 import unittest
 from unittest.mock import patch
 
+from tests.support import start_with_consent, start_legacy_plan
 from database import Database
 from main import SimulatorApp
 from session import GameSession
@@ -20,7 +21,7 @@ class DelayNoticeTests(unittest.TestCase):
     def japan_late(self):
         self.s.deliver_next_request()
         self.s.select(2)
-        self.s.choose_plan('economy')
+        start_legacy_plan(self.s, 'economy')
         return self.s.current
 
     def test_on_time_pending_and_closed_jobs_have_no_notice_reason(self):
@@ -222,7 +223,7 @@ class UsabilityGuiTests(unittest.TestCase):
         app = self.app
         app.next_request()
         app.select_request(2)
-        app.choose_plan('economy')
+        start_legacy_plan(app, 'economy')
         self.assertIn('delay', app.action_buttons)
         self.assertIn('20분 지연 예상', app.action_hint.cget('text'))
         app.action_buttons['delay'].invoke()
@@ -237,7 +238,7 @@ class UsabilityGuiTests(unittest.TestCase):
         app.next_request()
         for rid in (1, 2, 3):
             app.select_request(rid)
-            app.choose_plan('economy')
+            start_legacy_plan(app, 'economy')
         panel = app.resources
         self.assertEqual([int(panel.gpu_numbers[k].cget('text')) for k in ('total','used','available')], [10,10,0])
         self.assertEqual(len(panel.rack.find_withtag('gpu-block')), 10)
@@ -264,7 +265,7 @@ class UsabilityGuiTests(unittest.TestCase):
         app.next_request()
         app.next_request()
         app.select_request(3)
-        app.choose_plan('economy')
+        start_with_consent(app, 'economy')
         app.select_request(1)
         before = (app.center.gpu_used, app.center.power_used)
         text = app.resources.preview.cget('text')
@@ -273,10 +274,12 @@ class UsabilityGuiTests(unittest.TestCase):
         app.plan_var.set('economy')
         app.preview_plan()
         text = app.resources.preview.cget('text')
-        for expected in ('GPU 4 필요 / 가용 6 → 잔여 2', '전력 4 필요 / 가용 7 → 잔여 3', '배정 가능'):
+        for expected in ('GPU 4 필요 / 가용 6 → 잔여 2', '전력 4 필요 / 가용 7 → 잔여 3', '고객 동의 확인 필요'):
             self.assertIn(expected, text)
         self.assertEqual((app.center.gpu_used, app.center.power_used), before)
         self.assertFalse(hasattr(app.resources, 'preview_bar'))
+        self.assertEqual(app.action_buttons['start'].cget('state'), 'disabled')
+        app.session.propose_alternative(); self.assertTrue(app.session.review_alternative()); app.refresh()
         app.action_buttons['start'].invoke()
         self.assertEqual(app.resources.preview_title.cget('text'), '현재 작업 점유 자원')
         self.assertIn('현재 작업 GPU 4 / 전력 4', app.resources.preview.cget('text'))

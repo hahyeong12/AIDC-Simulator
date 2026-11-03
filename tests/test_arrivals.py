@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.support import start_with_consent, start_legacy_plan
 from database import Database
 from game import ACTIVE_PHASES
 from session import GameSession, MAX_PENDING_REQUESTS, CUSTOMER_COOLDOWN
@@ -28,7 +29,7 @@ class ArrivalTests(unittest.TestCase):
             db=Database(':memory:')
             try:
                 s=GameSession(db,seed=9,incident_chance=0)
-                s.deliver_next_request(); s.select(2); s.choose_plan(mode)
+                s.deliver_next_request(); s.select(2); start_legacy_plan(s, mode)
                 self.assertEqual(s.current.state.progress,0)
                 self.assertEqual((s.center.gpu_used,s.center.power_used),usage)
                 s.advance_time(10)
@@ -39,7 +40,7 @@ class ArrivalTests(unittest.TestCase):
                 db.close()
 
     def test_two_simultaneous_arrivals_preserve_running_job_and_selection(self):
-        s=self.s; s.choose_plan('economy')
+        s=self.s; start_with_consent(s, 'economy')
         state,run_id=s.current.state,s.current.playthrough_id
         s.advance_time(30)
         self.assertEqual(len(s.runs),3)
@@ -62,7 +63,7 @@ class ArrivalTests(unittest.TestCase):
             db=Database(':memory:')
             try:
                 s=GameSession(db,seed=seed,incident_chance=0)
-                s.choose_plan('economy'); s.advance_time(30)
+                start_with_consent(s, 'economy'); s.advance_time(30)
                 orders.append([r.mission['country'] for rid,r in s.runs.items() if rid!=1])
             finally: db.close()
         self.assertEqual(orders[0],orders[2])
@@ -109,7 +110,7 @@ class ArrivalTests(unittest.TestCase):
         self.assertLessEqual(max(counts)-min(counts),2)
 
     def test_shared_jobs_progress_before_and_after_automatic_arrivals(self):
-        s=self.s; s.choose_plan('economy')
+        s=self.s; start_with_consent(s, 'economy')
         first=s.current
         s.advance_time(30)
         japan=next(rid for rid,r in s.runs.items() if r.mission['country']=='일본')
@@ -121,7 +122,7 @@ class ArrivalTests(unittest.TestCase):
         self.assert_saved_usage(s,self.db)
 
     def test_insufficient_resources_reject_automatic_request_without_allocating(self):
-        s=self.s; s.choose_plan('economy')
+        s=self.s; start_with_consent(s, 'economy')
         s.deliver_next_request(); s.select(2); s.choose_plan('performance')
         s.advance_time(30)
         usa=next(rid for rid,r in s.runs.items() if r.mission['country']=='미국')
@@ -134,7 +135,7 @@ class ArrivalTests(unittest.TestCase):
         self.assert_saved_usage(s,self.db)
 
     def test_other_job_runs_during_incident_and_arrival_events(self):
-        s=self.s; s.choose_plan('economy'); first=s.current
+        s=self.s; start_with_consent(s, 'economy'); first=s.current
         first.state.incident_at=7
         s.advance_time(30)
         japan=next(rid for rid,r in s.runs.items() if r.mission['country']=='일본')
@@ -146,7 +147,7 @@ class ArrivalTests(unittest.TestCase):
         self.assert_saved_usage(s,self.db)
 
     def test_followup_failure_does_not_receive_duplicate_customer_request(self):
-        s=self.s; s.choose_plan('economy'); s.current.state.trigger_incident()
+        s=self.s; start_with_consent(s, 'economy'); s.current.state.trigger_incident()
         s.advance_time(60)
         self.assertFalse(s.current.state.succeeded)
         self.assertFalse(s.current.followup_closed)
@@ -154,7 +155,7 @@ class ArrivalTests(unittest.TestCase):
         self.assertEqual(sum(r.mission['id']==1 for r in s.runs.values()),1)
 
     def test_failed_save_restores_schedule_and_retry_delivers_exactly_once(self):
-        s=self.s; s.choose_plan('economy')
+        s=self.s; start_with_consent(s, 'economy')
         before=self.db.get_simulation()
         events=len(self.db.get_request_events(1))
         with patch.object(self.db,'save_runtime',side_effect=sqlite3.OperationalError('저장 실패')):
@@ -176,7 +177,7 @@ class ArrivalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/'arrivals.db'
             db=Database(path); s=GameSession(db,seed=9,incident_chance=0)
-            s.choose_plan('economy'); s.advance_time(30)
+            start_with_consent(s, 'economy'); s.advance_time(30)
             keys=[r['source_key'] for r in db.get_requests()]
             s.close(); db=Database(path)
             try:
@@ -190,7 +191,7 @@ class ArrivalTests(unittest.TestCase):
             finally: db.close()
 
     def test_old_save_adds_future_schedule_without_resetting_clock_or_history(self):
-        s=self.s; s.choose_plan('economy'); s.advance_time(10)
+        s=self.s; start_with_consent(s, 'economy'); s.advance_time(10)
         saved=self.db.get_simulation(); saved.pop('arrivals')
         self.db.save_simulation(saved)
         before=[dict(row) for row in self.db.get_recent_records()]
@@ -207,7 +208,7 @@ class ArrivalTests(unittest.TestCase):
         for steps in ((60,), (10,10,10,10,10,10)):
             db=Database(':memory:')
             try:
-                s=GameSession(db,seed=9,incident_chance=0); s.choose_plan('economy')
+                s=GameSession(db,seed=9,incident_chance=0); start_with_consent(s, 'economy')
                 for step in steps: s.advance_time(step)
                 outcomes.append((s.minute,s.current.state.work_done,s.arrival_index,
                                  [(r.request['source_key'],r.mission['id']) for r in s.runs.values()]))

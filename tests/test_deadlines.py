@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.support import start_with_consent, start_legacy_plan
 from database import Database
 from session import GameSession
 
@@ -68,7 +69,7 @@ class DeadlineTests(unittest.TestCase):
             db = Database(':memory:')
             try:
                 s = GameSession(db, seed=9, incident_chance=0)
-                s.deliver_next_request(); s.select(2); s.choose_plan(mode)
+                s.deliver_next_request(); s.select(2); start_legacy_plan(s, mode)
                 while s.current.state.phase != 'finished': s.advance_time(10)
                 r = s.current
                 outcomes.append((s.minute-540, r.terms['late_minutes'], r.state.score))
@@ -89,7 +90,7 @@ class DeadlineTests(unittest.TestCase):
 
     def test_notice_does_not_extend_due_or_erase_deadline_penalty(self):
         run = self.japan()
-        self.s.choose_plan('economy')
+        start_legacy_plan(self.s, 'economy')
         due = run.terms['due']
         self.s.notify_delay()
         self.s.advance_time(60); self.s.advance_time(30)
@@ -115,7 +116,7 @@ class DeadlineTests(unittest.TestCase):
         self.assertIn('[신규 작업 요청]', first[0][1])
         s.accept_request()
         self.assertIn('배정 일정을 확인', s.read_conversation(1)[0][1])
-        s.choose_plan('economy')
+        start_with_consent(s, 'economy')
         for _ in range(3):
             text = '\n'.join(t for _,t in s.read_conversation(1))
             self.assertIn('작업이 진행 중', text)
@@ -125,7 +126,7 @@ class DeadlineTests(unittest.TestCase):
         self.assertEqual(len(self.db.get_request_events(1)), count)
 
     def test_incident_notice_recovery_and_completion_messages_follow_state(self):
-        s = self.s; s.choose_plan('economy')
+        s = self.s; start_with_consent(s, 'economy')
         s.current.state.incident_at = 7
         s.advance_time(10)
         self.assertIn('복구 상황', s.read_conversation(1)[0][1])
@@ -171,7 +172,7 @@ class DeadlineTests(unittest.TestCase):
             finally: db.close()
 
     def test_legacy_payload_without_terms_is_exempt_and_records_unchanged(self):
-        s = self.s; s.choose_plan('economy'); s.advance_time(30)
+        s = self.s; start_with_consent(s, 'economy'); s.advance_time(30)
         payload = self.db.get_runtime(1)
         for key in ('terms','message_read_id','version'): payload.pop(key)
         self.db.save_runtime(1, s.current.playthrough_id, payload)
@@ -200,7 +201,7 @@ class DeadlineTests(unittest.TestCase):
         self.assertEqual(run.terms['alerts'], ['allocation_due','deadline_near'])
 
     def test_failed_completion_save_restores_penalty_and_allocation(self):
-        run = self.japan(); self.s.choose_plan('economy'); self.s.advance_time(60)
+        run = self.japan(); start_legacy_plan(self.s, 'economy'); self.s.advance_time(60)
         terms = deepcopy(run.terms)
         with patch.object(self.db, 'save_result', side_effect=sqlite3.OperationalError('실패')):
             with self.assertRaises(sqlite3.OperationalError): self.s.advance_time(30)
@@ -229,7 +230,7 @@ class DeadlineTests(unittest.TestCase):
 
     def test_replayed_arrival_key_does_not_reset_terms_or_duplicate_messages(self):
         run = self.s.current
-        self.s.choose_plan('economy'); self.s.advance_time(30)
+        start_with_consent(self.s, 'economy'); self.s.advance_time(30)
         before = (deepcopy(run.terms), list(run.messages), run.state.work_done)
         with self.s._atomic():
             rid = self.s._receive(1, 'initial:1')

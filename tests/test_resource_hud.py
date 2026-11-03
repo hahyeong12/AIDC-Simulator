@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 import unittest
 
+from tests.support import start_with_consent, start_legacy_plan
 from database import Database
 from main import SimulatorApp
 from ui import CYAN, AMBER, RED, CUSTOMER_COLORS
@@ -59,7 +60,7 @@ class ResourceHudTests(unittest.TestCase):
 
     def test_actual_allocation_and_return_dim_and_relight_equipment(self):
         app, panel = self.app, self.panel
-        app.choose_plan('economy')
+        start_with_consent(app, 'economy')
         self.assertEqual(panel.gpu_numbers['available'].cget('text'), '06')
         self.assertEqual(len(panel.rack.find_withtag('available')), 6)
         self.assertEqual(len(panel.rack.find_withtag('used')), 4)
@@ -82,7 +83,7 @@ class ResourceHudTests(unittest.TestCase):
         app.next_request()
         for rid in (1, 2, 3):
             app.select_request(rid)
-            app.choose_plan('economy')
+            start_legacy_plan(app, 'economy')
         app.select_request(2)
         self.assertEqual(len(panel.rack.find_withtag('selected-owner')), 2)
         self.assertEqual([panel.rack.itemcget(item, 'text') for item in panel.rack.find_withtag('used-state')],
@@ -116,7 +117,7 @@ class ResourceHudTests(unittest.TestCase):
         app.next_request()
         app.next_request()
         app.select_request(3)
-        app.choose_plan('economy')
+        start_with_consent(app, 'economy')
         app.select_request(1)
         before = (app.center.gpu_used, app.center.power_used, len(self.db.get_recent_records()))
         self.assertEqual(len(panel.rack.find_withtag('request-marker')), 6)
@@ -131,7 +132,7 @@ class ResourceHudTests(unittest.TestCase):
 
     def test_repeated_refresh_and_mode_switch_do_not_add_animation_timers(self):
         panel = self.panel
-        self.app.choose_plan('economy')
+        start_with_consent(self.app, 'economy')
         timer = panel.pulse_timer
         items, children = len(panel.rack.find_all()), len(panel.rack.winfo_children())
         for _ in range(250):
@@ -147,11 +148,11 @@ class ResourceHudTests(unittest.TestCase):
 
     def test_new_usage_cancels_previous_pulse_and_destroy_cancels_last_timer(self):
         panel = self.panel
-        self.app.choose_plan('economy')
+        start_legacy_plan(self.app, 'economy')
         previous = panel.pulse_timer
         self.app.next_request()
         self.app.select_request(2)
-        self.app.choose_plan('economy')
+        start_legacy_plan(self.app, 'economy')
         self.assertNotEqual(panel.pulse_timer, previous)
         self.assertNotIn(previous, self.root.tk.call('after', 'info'))
         timer = panel.pulse_timer

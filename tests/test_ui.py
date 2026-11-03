@@ -3,6 +3,7 @@ import sqlite3
 import tkinter as tk
 import unittest
 from unittest.mock import patch
+from tests.support import start_with_consent
 from database import Database
 from main import SimulatorApp
 from test_operations import finish_current
@@ -23,6 +24,7 @@ class GuiTests(unittest.TestCase):
 
     def test_customer_cards_and_actual_buttons_update_shared_resources(self):
         a=self.app; a.next_request(); a.next_request()
+        a.session.propose_alternative(); self.assertTrue(a.session.review_alternative())
         a.select_request(2); a.action_buttons['start'].invoke()
         a.select_request(3); a.action_buttons['start'].invoke()
         self.assertEqual((a.center.gpu_used,a.center.power_used),(9,10))
@@ -37,7 +39,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.errors,[])
 
     def test_network_warning_backup_and_log_survive_switch(self):
-        a=self.app; a.choose_plan('economy'); run_id=a.playthrough_id
+        a=self.app; start_with_consent(a, 'economy'); run_id=a.playthrough_id
         a.state.incident_at=7; a.advance_time(10)
         self.assertIn('장애',a.alert.cget('text'))
         a.next_request(); a.select_request(2); a.select_request(1)
@@ -71,7 +73,7 @@ class GuiTests(unittest.TestCase):
         dialog.destroy(); history.destroy()
 
     def test_close_save_failure_keeps_window_and_active_state(self):
-        a=self.app; a.choose_plan('economy')
+        a=self.app; start_with_consent(a, 'economy')
         with patch.object(self.db,'save_simulation',side_effect=sqlite3.OperationalError('실패')): a.on_close()
         self.assertTrue(self.root.winfo_exists())
         self.assertEqual(a.state.phase,'running')
@@ -100,7 +102,7 @@ class GuiTests(unittest.TestCase):
         dialog.destroy()
 
     def test_auto_arrival_preserves_selected_job_and_marks_new_request(self):
-        a=self.app; a.choose_plan('economy'); state,run_id=a.state,a.playthrough_id
+        a=self.app; start_with_consent(a, 'economy'); state,run_id=a.state,a.playthrough_id
         a.time_buttons[30].invoke()
         self.assertGreaterEqual(len(a.inbox.get_children()),2)
         self.assertIs(a.state,state); self.assertEqual(a.playthrough_id,run_id)
@@ -115,6 +117,9 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(a.session.current.request['status'],'waiting')
         self.assertIn('대기',a.inbox.item('1','values')[1])
         self.assertEqual(a.center.gpu_used,0)
+        a.plan_var.set('economy'); a.preview_plan()
+        self.assertEqual(a.action_buttons['start'].cget('state'),'disabled')
+        a.session.propose_alternative(); self.assertTrue(a.session.review_alternative()); a.refresh()
         a.plan_var.set('economy'); a.preview_plan(); a.action_buttons['start'].invoke()
         self.assertEqual(a.session.current.request['status'],'operating')
         self.assertEqual(a.state.phase,'running')

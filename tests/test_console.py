@@ -3,6 +3,7 @@ import tkinter as tk
 import unittest
 from unittest.mock import patch
 
+from tests.support import start_with_consent, start_legacy_plan
 from database import Database
 from main import SimulatorApp
 from ui import MessageDialog
@@ -29,7 +30,7 @@ class ConsoleTests(unittest.TestCase):
         app.next_request()
         for rid in (1,2,3):
             app.select_request(rid)
-            app.choose_plan('economy')
+            start_legacy_plan(app, 'economy')
         app.state.trigger_incident()
         app.refresh()
         for width, height in ((1280, 680), (1000, 650), (1840, 980)):
@@ -111,7 +112,7 @@ class ConsoleTests(unittest.TestCase):
 
     def test_automatic_notice_opens_matching_request_without_advancing_time(self):
         app=self.app
-        app.choose_plan('economy')
+        start_with_consent(app, 'economy')
         state=app.state
         app.time_buttons[30].invoke()
         self.assertEqual(len(app.session.runs),3)

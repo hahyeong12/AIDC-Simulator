@@ -25,6 +25,9 @@ def simulate(strategy, scenario='분산 접수'):
         for elapsed in range(0,horizon,10):
             for minute,mid in schedule:
                 if minute == elapsed and (minute,mid) != (0,1):
+                    if any(r.mission['id'] == mid and r.request['status'] in ('new','review','waiting','operating')
+                           for r in s.runs.values()):
+                        continue  # 실제 자동 접수처럼 동일 고객의 미종료 요청이 있으면 건너뜁니다.
                     with s._atomic(): s._receive(mid,f'scenario:{minute}:{mid}')
             pending = [r for r in s.runs.values() if r.request['status'] in ('new','review','waiting')]
             # 절약형 순차 전략은 먼저 접수한 요청을 하나씩 처리합니다.
@@ -36,6 +39,11 @@ def simulate(strategy, scenario='분산 접수'):
                 mode = 'economy' if strategy=='A' or (strategy=='B' and run.terms['priority'].startswith('일반')) else 'performance'
                 s.select(run.request['id'])
                 try:
+                    if not s.plan_agreed(run, mode):
+                        if not run.proposals:
+                            s.propose_alternative()
+                        if run.proposals[-1]['status'] == 'pending':
+                            s.review_alternative()
                     s.choose_plan(mode)
                 except ValueError:
                     s.wait_request()
@@ -74,6 +82,8 @@ class BalanceTests(unittest.TestCase):
             s.deliver_next_request(); s.select(2); s.choose_plan('performance')
             s.select(1)
             with self.assertRaisesRegex(ValueError,'전력 1단위'): s.choose_plan('performance')
+            s.propose_alternative()
+            self.assertTrue(s.review_alternative())
             s.choose_plan('economy')
             self.assertEqual((s.center.gpu_used,s.center.power_used), (7,8))
             for _ in range(3): s.advance_time(60)

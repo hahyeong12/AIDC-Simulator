@@ -1,4 +1,4 @@
-"""AIDC Simulator v0.7-1: 한 화면에서 운영하는 가상 AIDC 관제실."""
+"""AIDC Simulator v0.7-2: 한 화면에서 운영하는 가상 AIDC 관제실."""
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -13,7 +13,7 @@ from ui import (BG, PANEL, BORDER, TEXT, MUTED, CYAN, GREEN, RED, AMBER, FONT,
 class SimulatorApp:
     def __init__(self, root, db=None, **session_options):
         self.root = root
-        root.title('AIDC Simulator v0.7-1 | 울산 AI 데이터센터 관제실')
+        root.title('AIDC Simulator v0.7-2 | 울산 AI 데이터센터 관제실')
         root.geometry(f'{min(1280, root.winfo_screenwidth()-40)}x{min(680, root.winfo_screenheight()-100)}')
         root.minsize(1000, 650)
         root.configure(bg=BG)
@@ -48,7 +48,7 @@ class SimulatorApp:
         header = tk.Frame(self.root, bg=BG, padx=16, pady=8)
         header.grid(row=0, sticky='ew')
         label(header, 'AIDC', 22, CYAN, True).pack(side='left')
-        label(header, 'ULSAN / CONTROL ROOM  v0.7-1', 11, bold=True).pack(side='left', padx=12)
+        label(header, 'ULSAN / CONTROL ROOM  v0.7-2', 11, bold=True).pack(side='left', padx=12)
         self.notice_var = tk.StringVar()
         self.notice_button = ActionButton(header, 'AIDC LINK', self.open_latest_message)
         self.notice_button.pack(side='right')
@@ -204,8 +204,12 @@ class SimulatorApp:
         plan = self.state.plans[self.plan_var.get()]
         fits = plan['gpu'] <= self.center.available_gpu() and plan['power'] <= self.center.available_power()
         editable = self.state.phase in ('ready','accepted') or (self.state.phase == 'finished' and not self.state.succeeded)
-        for button in self.mode_buttons.values():
-            button.configure(state='normal' if editable else 'disabled')
+        for key, button in self.mode_buttons.items():
+            p = self.state.plans[key]
+            status = self.session.mode_status(self.session.current, key)
+            if editable and (p['gpu'] > self.center.available_gpu() or p['power'] > self.center.available_power()):
+                status += ' · 자원 부족'
+            button.configure(text=f'{p["label"]} — {status}', state='normal' if editable else 'disabled')
         for key in ('start','retry'):
             if key in self.action_buttons:
                 allowed = fits and self.session.plan_agreed(self.session.current, self.plan_var.get()) and (key != 'retry' or self.state.retry_count < 2)
@@ -248,6 +252,9 @@ class SimulatorApp:
                        ('wait','요청 대기',self.wait_request), ('reject','거절 · 사유',self.show_rejection)]
             if self.session.current.proposals and self.session.current.proposals[-1]['status'] in ('pending','accepted'):
                 options[1] = ('propose','대안 · 고객 답변',lambda: self.open_message(self.session.selected_id))
+            elif self.session.current.conditions and (self.session.current.proposals
+                    or 'economy' in self.session.current.conditions['allowed_modes']):
+                options = [option for option in options if option[0] != 'propose']
             if s.phase != 'accepted':
                 options.insert(0, ('accept','수락만 · 배정 대기',lambda: self._perform(self.session.accept_request)))
         elif s.phase in ('incident','paused'):

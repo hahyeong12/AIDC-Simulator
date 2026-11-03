@@ -5,7 +5,7 @@ from copy import deepcopy
 import random
 
 from database import Database
-from game import DataCenter, GameState, RESPONSES, plans_for, request_terms, game_time
+from game import DataCenter, GameState, RESPONSES, request_terms, request_conditions, game_time
 
 REQUEST_LABELS = {'new':'신규 요청','review':'검토 중','waiting':'대기',
                   'operating':'수락','rejected':'거절','completed':'처리 완료'}
@@ -29,6 +29,7 @@ class MissionRun:
     terms: dict = field(default_factory=dict)
     message_read_id: int = 0
     proposals: list[dict] = field(default_factory=list)
+    conditions: dict = field(default_factory=dict)
 
 
 class GameSession:
@@ -94,6 +95,7 @@ class GameSession:
                              delay_notified=snapshot['delay_notified'], terms=snapshot.get('terms', {}),
                              message_read_id=snapshot.get('message_read_id', 0),
                              proposals=snapshot.get('proposals', []),
+                             conditions=snapshot.get('conditions', {}),
                              delay_notice_key=snapshot.get('delay_notice_key'))
         else:
             s = GameState(center=self.center,country=mission['country'])
@@ -135,11 +137,12 @@ class GameSession:
                                   'last_feedback':run.last_feedback,'delay_notified':run.delay_notified,
                                   'delay_notice_key':run.delay_notice_key,
                                   'terms':run.terms, 'message_read_id':run.message_read_id,
-                                  'proposals':run.proposals, 'version':2})
+                                  'proposals':run.proposals, 'conditions':run.conditions, 'version':2})
 
     @contextmanager
     def _atomic(self):
-        before = {rid:(run, {**vars(run), 'terms':deepcopy(run.terms), 'proposals':deepcopy(run.proposals)}, vars(run.state).copy(),list(run.messages),dict(run.request))
+        before = {rid:(run, {**vars(run), 'terms':deepcopy(run.terms), 'proposals':deepcopy(run.proposals),
+                            'conditions':deepcopy(run.conditions)}, vars(run.state).copy(),list(run.messages),dict(run.request))
                   for rid,run in self.runs.items()}
         usage = self.center.gpu_used,self.center.power_used
         clock = self.minute,self.roll_index,self.selected_id
@@ -176,12 +179,19 @@ class GameSession:
     def _refresh_request(self, run):
         run.request = dict(self.db.get_request(run.request['id']))
 
-    def _message(self, mission):
-        p,e = (plans_for(mission['country'])[k] for k in ('performance','economy'))
+    def _message(self, mission, conditions):
+        p,e = (conditions['plans'][k] for k in ('performance','economy'))
+        permission = ('고성능·절약형 모두 허용합니다. 운영자가 자원과 처리 시간을 고려하여 직접 선택해 주세요.'
+                      if conditions['type'] == 'flexible' else
+                      '고성능 운영을 요청드립니다. 절약형으로 변경하려면 대안 제시 후 저희의 명시적인 동의가 필요합니다.')
         return (f'[신규 작업 요청]\n발신: {mission["company_name"]}\n국가: {mission["country"]}\n\n안녕하세요.\n'
                 f'{mission["description"]}\n요청 작업: {mission["title"]}\n\n'
+                f'원래 요청 모드: {p["label"]}\n{permission}\n'
                 f'요청 GPU: {p["gpu"]}개 / 전력: {p["power"]}단위 / 네트워크: {p["network"]}단위\n'
-                f'절약형: GPU {e["gpu"]}개 / 전력 {e["power"]}단위\n\n가능한 자원과 운영 일정을 확인해 회신 부탁드립니다. 감사합니다.')
+                f'절약형: GPU {e["gpu"]}개 / 전력 {e["power"]}단위 · '
+                + ('고객 허용 모드' if conditions['type'] == 'flexible' else '고객 동의 필요')
+                + f'\n완료 기한: {game_time(conditions["due"])} · 기한까지 처리해 주세요.\n\n'
+                + '가능한 자원과 운영 일정을 확인해 회신 부탁드립니다. 감사합니다.')
 
     def _receive(self, mid, key=None):
         existing = self.db.find_request_by_source(key) if key is not None else None
@@ -189,13 +199,16 @@ class GameSession:
             if existing['id'] not in self.runs:
                 self.runs[existing['id']] = self._load_run(existing)
             return existing['id']
-        rid = self.db.create_request(mid,self._message(self.missions[mid]),key)
+        terms = request_terms(self.missions[mid]['country'], self.minute)
+        conditions = request_conditions(self.missions[mid], terms['due'])
+        message = self._message(self.missions[mid], conditions)
+        rid = self.db.create_request(mid,message,key)
         run = self._load_run(self.db.get_request(rid))
         self.runs[rid] = run
-        run.terms = request_terms(run.mission['country'], self.minute)
+        run.terms, run.conditions = terms, conditions
         self.arrival_last[mid] = self.minute
         self._emit(run,'arrival',f'새 업무 메시지: {run.mission["company_name"]} · {run.mission["country"]}')
-        self._feedback(run, self._message(run.mission)+'\n\n'+self.deadline_summary(run)
+        self._feedback(run, message+'\n\n'+self.deadline_summary(run)
                        +f'\n미배정 요청의 최종 접수 종료: {game_time(run.terms["expires"])}', 'customer_request')
         return rid
 
@@ -275,9 +288,11 @@ class GameSession:
             self.db.change_request_status(run.request['id'],'operating',run.playthrough_id)
         self._emit(run,'start',f'[고객 요청 #{run.request["id"]}] {run.mission["company_name"]} · {run.mission["title"]}')
         self._emit(run,'allocation',f'{s.plans[key]["label"]}: GPU {s.gpu_used} / 전력 {s.power_used} 배정. 정상 실행을 시작합니다.')
-        if run.proposals:
+        if run.proposals or run.conditions:
             self._emit(run,'agreed_plan',f'최종 운영 계획: {s.plans[key]["label"]} · '
-                       + ('고객 동의 대안 적용' if key == run.proposals[-1]['proposed']['mode'] else '원래 요청 조건 적용'))
+                       + ('고객 동의 대안 적용' if run.proposals and key == run.proposals[-1]['proposed']['mode']
+                          else '고객 허용 모드 적용' if run.conditions and key != run.conditions['requested_mode']
+                          else '원래 요청 조건 적용'))
         if run.terms and not retry:
             run.terms['started'] = self.minute
         self._feedback(run,'현재 작업이 진행 중인 것으로 확인했습니다. 완료 결과를 기다리겠습니다.', 'customer_start')
@@ -292,14 +307,41 @@ class GameSession:
         return run.messages[-2:]
 
     def plan_agreed(self, run, key):
-        """기존 요청서의 모드 선택을 유지하되, 협의를 시작한 대안은 동의가 필요합니다."""
-        if not run.proposals:
-            return True
-        proposal = run.proposals[-1]
-        if proposal['status'] == 'pending':
+        """최초 허용 조건 또는 명시적으로 동의한 조건과 실제 배정 조건을 검사합니다."""
+        if key not in run.state.plans:
             return False
-        return key == proposal['original']['mode'] or (
-            proposal['status'] == 'accepted' and key == proposal['proposed']['mode'])
+        proposal = run.proposals[-1] if run.proposals else None
+        if proposal and proposal['status'] == 'pending':
+            return False
+        if proposal and proposal['status'] == 'accepted' and key == proposal['proposed']['mode']:
+            return self._plan_matches(run, key, proposal['proposed'])
+        if run.conditions:
+            return key in run.conditions['allowed_modes'] and self._plan_matches(run, key, run.conditions['plans'].get(key, {}))
+        # 최초 조건이 없던 저장에는 고객 의사를 소급 추정하지 않습니다.
+        return proposal is None or (key == proposal['original']['mode']
+                                    and self._plan_matches(run, key, proposal['original']))
+
+    @staticmethod
+    def _plan_matches(run, key, agreed):
+        return agreed.get('mode') == key and all(
+            agreed.get(field) == run.state.plans[key][field] for field in ('gpu', 'power', 'network'))
+
+    def mode_status(self, run, key):
+        """운영 모드 선택 영역에 최초 허용 범위와 협의 결과를 표시합니다."""
+        proposal = run.proposals[-1] if run.proposals else None
+        if run.conditions:
+            status = ('고객 원래 요청' if key == run.conditions['requested_mode'] else
+                      '고객 허용 모드' if key in run.conditions['allowed_modes'] else '고객 동의 필요')
+        else:
+            status = '이전 요청 · 기존 선택 허용'
+        if proposal:
+            if proposal['status'] == 'pending':
+                return status + ' · 협의 중'
+            if key == proposal['proposed']['mode']:
+                status = '고객 동의 완료' if proposal['status'] == 'accepted' else '고객 거절 · 실행 불가'
+        if status not in ('고객 동의 필요', '고객 거절 · 실행 불가') and not self.plan_agreed(run, key):
+            return '동의 조건 불일치 · 실행 불가'
+        return status
 
     def _require_proposable(self, run):
         if run.request['status'] not in ('new','review','waiting') or run.state.phase not in ('ready','accepted'):
@@ -309,9 +351,11 @@ class GameSession:
 
     def alternative_preview(self, run):
         """원본 요청서나 실제 자원을 바꾸지 않고 두 기존 모드를 비교합니다."""
-        original = dict(run.state.plans['performance'], mode='performance')
+        original_mode = run.conditions['requested_mode'] if run.conditions else 'performance'
+        original_plan = run.conditions['plans'][original_mode] if run.conditions else run.state.plans[original_mode]
+        original = dict(original_plan, mode=original_mode)
         proposed = dict(run.state.plans['economy'], mode='economy')
-        original['minutes'] = run.state.estimate_minutes('performance')
+        original['minutes'] = run.state.estimate_minutes(original_mode)
         proposed['minutes'] = run.state.estimate_minutes('economy')
         due = run.terms.get('due')
         return {'original':original, 'proposed':proposed, 'created':self.minute, 'due':due,
@@ -334,6 +378,10 @@ class GameSession:
     def propose_alternative(self):
         run = self.current
         self._require_proposable(run)
+        if run.conditions and 'economy' in run.conditions['allowed_modes']:
+            raise ValueError('절약형은 고객이 이미 허용한 모드입니다. 별도 협의 없이 선택할 수 있습니다.')
+        if run.conditions and run.proposals:
+            raise ValueError('이 요청의 대안 협의는 이미 진행했습니다. 기존 조건 또는 동의한 대안을 선택해 주세요.')
         if run.proposals and run.proposals[-1]['status'] in ('pending','accepted'):
             raise ValueError('이미 제시한 대안과 고객 답변을 확인해 주세요.')
         proposal = self.alternative_preview(run)
@@ -346,7 +394,11 @@ class GameSession:
             shortage = original['gpu'] > self.center.available_gpu() or original['power'] > self.center.available_power()
             intro = ('현재 요청하신 고성능 운영에 필요한 자원이 부족합니다.' if shortage else
                      '자원 사용량을 줄이는 절약형 운영을 대안으로 제안드립니다.')
-            self._emit(run,'proposal',intro+'\n대신 절약형 운영을 제안드립니다. 필요한 GPU는 줄어들지만 작업 시간이 늘어납니다.\n\n'
+            schedule = ('예상 완료 기한은 충족할 수 있습니다.' if proposal['on_time'] else
+                        '예상 완료 기한을 초과합니다.' if proposal['on_time'] is False else
+                        '완료 기한 정보가 없어 일정 준수를 확인할 수 없습니다.')
+            self._emit(run,'proposal',intro+f'\nGPU {proposal["proposed"]["gpu"]}개를 사용하는 절약형 운영을 제안드립니다. '
+                       + '작업 시간이 증가하지만 자원 사용량이 줄어듭니다.\n'+schedule+'\n\n'
                        + self.proposal_summary(proposal))
             self._feedback(run,'제안하신 운영 조건을 검토하겠습니다.', 'customer_proposal_review')
         return deepcopy(proposal)
