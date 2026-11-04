@@ -1,4 +1,4 @@
-"""AIDC Simulator v0.8-2: 실제 서버 점유와 연결된 AIDC 관제실."""
+"""AIDC Simulator v0.8-4: 서버 장애·장비 복구·작업 이전을 운영하는 관제실."""
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -6,6 +6,7 @@ from database import Database
 from session import GameSession, MAX_PENDING_REQUESTS
 from game import RESPONSES, game_time
 from server_console import LiveOverview, LiveServerRoom, ServerPanel
+from allocation_dialog import AllocationDialog
 from ui import (BG, PANEL, BORDER, TEXT, MUTED, CYAN, GREEN, RED, AMBER, FONT,
                 ActionButton, RejectionDialog, MessageDialog,
                 TextDialog, label, request_status_of, status_of)
@@ -14,7 +15,7 @@ from ui import (BG, PANEL, BORDER, TEXT, MUTED, CYAN, GREEN, RED, AMBER, FONT,
 class SimulatorApp:
     def __init__(self, root, db=None, **session_options):
         self.root = root
-        root.title('AIDC Simulator v0.8-2 | 울산 AI 데이터센터 관제실')
+        root.title('AIDC Simulator v0.8-4 | 울산 AI 데이터센터 관제실')
         root.geometry(f'{min(1280, root.winfo_screenwidth()-40)}x{min(680, root.winfo_screenheight()-100)}')
         root.minsize(1000, 650)
         root.configure(bg=BG)
@@ -22,6 +23,7 @@ class SimulatorApp:
         self.session = GameSession(self.db, **session_options)
         self.center = self.session.center
         self.message_window = None
+        self.allocation_window = None
         self.setup_ui()
         self.refresh()
         self.network.start()
@@ -53,7 +55,7 @@ class SimulatorApp:
         header = tk.Frame(self.root, bg=BG, padx=16, pady=8)
         header.grid(row=0, sticky='ew')
         label(header, 'AIDC', 22, CYAN, True).pack(side='left')
-        label(header, 'ULSAN / CONTROL ROOM  v0.8-2', 11, bold=True).pack(side='left', padx=12)
+        label(header, 'ULSAN / CONTROL ROOM  v0.8-4', 11, bold=True).pack(side='left', padx=12)
         self.notice_var = tk.StringVar()
         self.notice_button = ActionButton(header, 'AIDC LINK', self.open_latest_message)
         self.notice_button.pack(side='right')
@@ -95,6 +97,11 @@ class SimulatorApp:
         middle = tk.Frame(body, bg=PANEL, padx=0, pady=0)
         middle.grid(row=0, column=1, sticky='nsew', padx=(0, 10))
         self.resources = ServerPanel(body, self.session)
+        self.resources.compare_button.configure(command=self.open_allocation_plans)
+        self.resources.fault_button.configure(command=lambda:self._perform(
+            lambda:self.session.inject_server_fault(self.resources.selected)))
+        self.resources.repair_button.configure(command=lambda:self._perform(
+            lambda:self.session.begin_server_repair(self.resources.selected)))
         self.network = self.server_room = LiveServerRoom(middle, self.session, self.resources.select_server)
         self.network.pack(fill='both', expand=True)
         self.alert = label(middle, size=10, color=AMBER, justify='left', wraplength=400)
@@ -168,6 +175,10 @@ class SimulatorApp:
             elif run.state.phase == 'recovering': short = '복구'
             elif run.terms.get('expired'): short = '만료'
             elif run.state.phase == 'finished' and not run.state.succeeded: short = '실패'
+            if self.session.hardware_servers(run):
+                short, color = '장비', RED
+            elif run.state.allocated and run.migration_left:
+                short = '이전'
             level = self.session.deadline_level(run)
             if level:
                 color = RED if level=='overdue' else AMBER
@@ -182,7 +193,8 @@ class SimulatorApp:
             country = {'싱가포르':'SG','일본':'JP','미국':'US'}.get(run.mission['country'],run.mission['country'])
             self.inbox.insert('', 'end', iid=str(rid), values=(f'{marker}{country} · {run.mission["company_name"]}', name), tags=(tag,))
             if run in active:
-                self.active_list.insert('', 'end', iid=str(rid), values=(run.mission['country'], f'{status_of(run.state)[0]} {getattr(run.state,"progress",0):.0f}%'))
+                status = '서버 장애' if self.session.hardware_servers(run) else '이전 준비' if run.migration_left else status_of(run.state)[0]
+                self.active_list.insert('', 'end', iid=str(rid), values=(run.mission['country'], f'{status} {getattr(run.state,"progress",0):.0f}%'))
         self.inbox.selection_set(str(self.session.selected_id))
         unread_new = [r for r in self.session.runs.values()
                       if not r.request['is_read'] and r.request['status']=='new']
@@ -191,7 +203,7 @@ class SimulatorApp:
         if incoming:
             plan = incoming.state.plans['performance']
             self.arrival_notice.configure(text=f'{incoming.mission["company_name"]} · 새 요청\n'
-                                          f'필요 GPU {plan["gpu"]} · 가용 GPU {self.center.available_gpu()}', fg=CYAN)
+                                          f'필요 GPU {plan["gpu"]} · 가용 GPU {self.session.servers.available()[0]}', fg=CYAN)
         else:
             self.arrival_notice.configure(text='새 요청은 시간 진행 중 자동 도착합니다.', fg=MUTED)
         self.arrival_open_button.configure(state='normal' if incoming else 'disabled')
@@ -201,6 +213,9 @@ class SimulatorApp:
                                        f'{pending}/{MAX_PENDING_REQUESTS}'+(' 보류' if limit_note else ''))
         faults = [r for r in active if r.state.phase in ('incident','paused')]
         self.alert.configure(text='! ' + ' · '.join(r.mission['country'] for r in faults)+' 장애 / 중단 · 대응을 선택하세요' if faults else '정상 작업은 시간 진행 버튼으로 함께 처리됩니다.')
+        hardware = [key for key,value in self.session.servers.hardware.items() if value.state != 'HEALTHY']
+        if hardware:
+            self.alert.configure(text='장비 사용 불가: '+', '.join(hardware)+' · 랙 선택 → 복구 / 고객 선택 → 작업 이전')
         self.network.redraw()
         self.overview.refresh()
 
@@ -209,12 +224,15 @@ class SimulatorApp:
         if show_preview:
             self.resources.show_preview()
         plan = self.state.plans[self.plan_var.get()]
-        fits = plan['gpu'] <= self.center.available_gpu() and plan['power'] <= self.center.available_power()
+        available_gpu, available_power = self.session.servers.available()
+        available_gpu = min(available_gpu, self.center.available_gpu())
+        available_power = min(available_power, self.center.available_power())
+        fits = plan['gpu'] <= available_gpu and plan['power'] <= available_power
         editable = self.state.phase in ('ready','accepted') or (self.state.phase == 'finished' and not self.state.succeeded)
         for key, button in self.mode_buttons.items():
             p = self.state.plans[key]
             status = self.session.mode_status(self.session.current, key)
-            if editable and (p['gpu'] > self.center.available_gpu() or p['power'] > self.center.available_power()):
+            if editable and (p['gpu'] > available_gpu or p['power'] > available_power):
                 status += ' · 자원 부족'
             button.configure(text=f'{p["label"]} — {status}', state='normal' if editable else 'disabled')
         for key in ('start','retry'):
@@ -229,6 +247,9 @@ class SimulatorApp:
             self.action_frame.columnconfigure(column, weight=0)
         s, r = self.state, self.session.current.request
         name, color = request_status_of(self.session.current)
+        if self.session.hardware_status(self.session.current):
+            name += ' · '+self.session.hardware_status(self.session.current)
+            color = RED if self.session.hardware_servers(self.session.current) else AMBER
         self.detail_title.configure(text=f'요청 #{r["id"]} · {self.mission["company_name"]} / {self.mission["country"]} · {name}', fg=color)
         eta = getattr(s, 'remaining_minutes', 0)
         self.action_hint.configure(text=f'{self.mission["title"]}  |  진행 {getattr(s,"progress",0):.0f}% · 예상 잔여 {eta}분 (장애·복구 지연 제외)')
@@ -270,6 +291,8 @@ class SimulatorApp:
                         ('fail','처리 불가 보고',lambda: self._perform(self.session.report_failure))]
         elif s.phase in ('running','recovering'):
             options = [('delay','고객 지연 안내',lambda: self._perform(self.session.notify_delay))]
+            if self.session.hardware_servers(self.session.current) or self.session.current.migration_left:
+                options += [('fail','처리 불가 보고',lambda:self._perform(self.session.report_failure))]
         elif s.phase == 'finished' and not s.succeeded and not self.session.current.followup_closed:
             options = [('retry','선택 모드로 재처리',lambda: self._perform(lambda: self.session.retry(self.plan_var.get()))),
                        ('delay','고객 지연 안내',lambda: self._perform(self.session.notify_delay)),
@@ -278,6 +301,8 @@ class SimulatorApp:
             options = [('restart','같은 고객의 새 요청',self.new_mission)]
         if not self.session.can_notify_delay(self.session.current):
             options = [option for option in options if option[0] != 'delay']
+        if self.session.hardware_servers(self.session.current) and not self.session.current.migration_left:
+            options.insert(0, ('migrate','작업 이전 계획',self.open_migration_plans))
         if options:
             self.action_frame.grid()
         else:
@@ -304,6 +329,23 @@ class SimulatorApp:
         return success
     def choose_plan(self, key):
         return self._perform(lambda: self.session.choose_plan(key))
+    def open_allocation_plans(self):
+        if self.allocation_window is not None and self.allocation_window.winfo_exists():
+            self.allocation_window.lift()
+            return self.allocation_window
+        self.allocation_window = AllocationDialog(
+            self.root, self.session, self.plan_var.get(),
+            lambda mode, parts: self._perform(lambda: self.session.choose_plan(mode, server_plan=parts)))
+        return self.allocation_window
+    def open_migration_plans(self):
+        if self.allocation_window is not None and self.allocation_window.winfo_exists():
+            self.allocation_window.lift()
+            return self.allocation_window
+        self.allocation_window = AllocationDialog(
+            self.root, self.session, self.state.plan,
+            lambda mode, parts:self._perform(lambda:self.session.migrate(parts, self.allocation_window.source)),
+            migration=True)
+        return self.allocation_window
     def propose_alternative(self):
         if self._perform(self.session.propose_alternative):
             return self.open_message(self.session.selected_id)

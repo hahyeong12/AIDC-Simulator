@@ -1,12 +1,12 @@
 """요청 접수, 가상 시간, 동시 운영과 SQLite 저장의 일관성을 관리합니다."""
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from copy import deepcopy
 import random
 
 from database import Database
 from game import DataCenter, GameState, RESPONSES, request_terms, request_conditions, game_time
-from server_resources import ServerPool, Allocation, SERVERS
+from server_resources import ServerPool, Allocation, SERVERS, ServerHealth
 
 REQUEST_LABELS = {'new':'신규 요청','review':'검토 중','waiting':'대기',
                   'operating':'수락','rejected':'거절','completed':'처리 완료'}
@@ -32,6 +32,9 @@ class MissionRun:
     proposals: list[dict] = field(default_factory=list)
     conditions: dict = field(default_factory=dict)
     server_allocations: list = field(default_factory=list)
+    hardware_downtime: int = 0
+    migration_left: int = 0
+    migration_downtime: int = 0
 
 
 class GameSession:
@@ -51,6 +54,11 @@ class GameSession:
         for request in db.get_requests():
             self.runs[request['id']] = self._load_run(request)
         self._restore_servers()
+        hardware = saved.get('server_health', {}) if saved else {}
+        if not isinstance(hardware, dict) or set(hardware)-{s.key for s in SERVERS}:
+            raise ValueError('저장된 서버 상태의 식별자가 올바르지 않습니다.')
+        # 기존 배정은 장애 상태여도 그대로 복원한 다음 신규 배정을 차단합니다.
+        self.servers.hardware = {s.key:ServerHealth(**hardware.get(s.key, {})) for s in SERVERS}
         arrivals = saved.get('arrivals', {}) if saved else {}
         # 이전 저장 파일은 현재 시각 이후부터 새 일정을 시작하며 과거 요청을 재생성하지 않습니다.
         self.next_arrival_minute = arrivals.get('next_minute', self.minute + ARRIVAL_INTERVAL)
@@ -101,7 +109,13 @@ class GameSession:
                              proposals=snapshot.get('proposals', []),
                              conditions=snapshot.get('conditions', {}),
                              server_allocations=[Allocation.from_payload(a) for a in snapshot.get('server_allocations', [])],
+                             hardware_downtime=snapshot.get('hardware_downtime', 0),
+                             migration_left=snapshot.get('migration_left', 0),
+                             migration_downtime=snapshot.get('migration_downtime', 0),
                              delay_notice_key=snapshot.get('delay_notice_key'))
+            if (any(type(v) is not int or v < 0 for v in (run.hardware_downtime, run.migration_left, run.migration_downtime))
+                    or run.migration_left not in (0, 10) or (run.migration_left and not s.allocated)):
+                raise ValueError('저장된 하드웨어 중단/이전 시간이 올바르지 않습니다.')
         else:
             s = GameState(center=self.center,country=mission['country'])
             run = MissionRun(mission,s,dict(request),request['playthrough_id'])
@@ -136,7 +150,7 @@ class GameSession:
         for run in self.runs.values():
             if not run.state.allocated:
                 continue
-            current = next((a for a in run.server_allocations if a.playthrough_id == run.playthrough_id), None)
+            current = next((a for a in reversed(run.server_allocations) if a.playthrough_id == run.playthrough_id), None)
             if current is not None:
                 if (current.gpu, current.power) != (run.state.gpu_used, run.state.power_used):
                     raise ValueError('저장된 서버 배정과 작업 자원 조건이 일치하지 않습니다.')
@@ -150,6 +164,7 @@ class GameSession:
 
     def _persist(self):
         self.db.save_simulation({'minute':self.minute,'seed':self.seed,'roll_index':self.roll_index,
+                                 'server_health':{key:asdict(value) for key,value in self.servers.hardware.items()},
                                  'incident_chance':self.incident_chance,
                                  'arrivals':{'next_minute':self.next_arrival_minute, 'slot':self.arrival_index,
                                              'last_by_mission':self.arrival_last}})
@@ -160,6 +175,8 @@ class GameSession:
                                   'delay_notice_key':run.delay_notice_key,
                                   'terms':run.terms, 'message_read_id':run.message_read_id,
                                   'proposals':run.proposals, 'conditions':run.conditions,
+                                  'hardware_downtime':run.hardware_downtime, 'migration_left':run.migration_left,
+                                  'migration_downtime':run.migration_downtime,
                                   'server_allocations':[a.payload() for a in run.server_allocations], 'version':2})
 
     @contextmanager
@@ -171,6 +188,7 @@ class GameSession:
         clock = self.minute,self.roll_index,self.selected_id
         arrivals = self.next_arrival_minute,self.arrival_index,dict(self.arrival_last)
         allocations = dict(self.servers.allocations)
+        hardware = dict(self.servers.hardware)
         histories = {rid:list(run.server_allocations) for rid, run in self.runs.items()}
         try:
             with self.db.transaction():
@@ -188,7 +206,97 @@ class GameSession:
             self.minute,self.roll_index,self.selected_id = clock
             self.next_arrival_minute,self.arrival_index,self.arrival_last = arrivals
             self.servers.allocations = allocations
+            self.servers.hardware = hardware
             raise
+
+    def hardware_servers(self, run):
+        allocation = self.servers.allocations.get(run.playthrough_id)
+        return tuple(s.server_id for s in allocation.slices
+                     if self.servers.hardware[s.server_id].state != 'HEALTHY') if allocation else ()
+
+    def hardware_status(self, run):
+        servers = self.hardware_servers(run)
+        issues = []
+        if servers:
+            issues.append('서버 장애 '+', '.join(servers)+f' · 하드웨어 중단 {run.hardware_downtime}분')
+        if run.state.allocated and run.migration_left:
+            issues.append(f'작업 이전 준비 {run.migration_left}분')
+        return ' / '.join(issues)
+
+    def inject_server_fault(self, server_id):
+        if server_id not in self.servers.hardware:
+            raise ValueError('존재하지 않는 서버입니다.')
+        if self.servers.hardware[server_id].state != 'HEALTHY':
+            raise ValueError('정상 서버에만 교육용 장애를 발생시킬 수 있습니다.')
+        with self._atomic():
+            self.servers.hardware[server_id] = ServerHealth('FAULT', reason='교육용 서버 장애 시뮬레이션 · 서버 사용 불가')
+            for run in self.runs.values():
+                if server_id in self.hardware_servers(run):
+                    self._emit(run, 'hardware_fault', f'Server {server_id} 하드웨어 장애. 배정 유지 · 작업 전체 중단.')
+                    self._feedback(run, f'Server {server_id} 장애로 작업이 멈췄습니다. 장비 복구 또는 작업 이전 계획을 알려주세요.',
+                                   'customer_hardware_fault')
+
+    def begin_server_repair(self, server_id):
+        if server_id not in self.servers.hardware or self.servers.hardware[server_id].state != 'FAULT':
+            raise ValueError('FAULT 상태인 서버만 복구를 시작할 수 있습니다.')
+        with self._atomic():
+            self.servers.hardware[server_id] = ServerHealth('REPAIRING', 20, self.servers.hardware[server_id].reason)
+            for run in self.runs.values():
+                if server_id in self.hardware_servers(run):
+                    self._emit(run, 'hardware_repair', f'Server {server_id} 복구 시작. 가상 시간 20분 필요 · 기존 배정 유지.')
+                    self._feedback(run, f'Server {server_id} 장비 복구 20분 일정을 확인했습니다. 기존 작업과 완료 기한은 유지됩니다.',
+                                   'customer_hardware_repair')
+
+    def migration_preview(self, run):
+        source = self.servers.allocations.get(run.playthrough_id)
+        result = {'allowed':False, 'reason':'서버 장애 영향을 받는 실행 작업만 이전할 수 있습니다.',
+                  'options':(), 'source':source, 'slices':None}
+        if not run.state.allocated or not self.hardware_servers(run) or run.migration_left:
+            return result
+        if not self.plan_agreed(run, run.state.plan):
+            return {**result, 'reason':'현재 운영 모드의 고객 조건/동의를 확인해 주세요.'}
+        options = self.servers.migration_options(run.playthrough_id)
+        return {**result, 'allowed':bool(options), 'options':options, 'slices':options[0] if options else None,
+                'reason':'이전 가능' if options else '정상 서버의 GPU·전력으로 전체 작업을 이전할 수 없습니다.'}
+
+    def migrate(self, server_plan, source):
+        run = self.current
+        with self._atomic():
+            current = self.servers.allocations.get(run.playthrough_id)
+            if current is None or current != source or not self.hardware_servers(run) or run.migration_left:
+                raise ValueError('기존 배정이나 장애 상황이 변경되었습니다. 이전 계획을 다시 확인해 주세요.')
+            if not self.plan_agreed(run, run.state.plan):
+                raise ValueError('고객이 동의한 운영 모드로만 이전할 수 있습니다.')
+            pool = self.servers.excluding(run.playthrough_id)
+            try:
+                pool.validate_plan(server_plan, run.state.gpu_used, run.state.power_used)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f'선택한 이전 계획을 사용할 수 없습니다: {exc} 이전 계획을 다시 확인해 주세요.') from exc
+            allocation = Allocation(run.playthrough_id, server_plan)
+            # 전체 DataCenter는 점유/반환하지 않습니다. 현재 수행의 위치만 한 번 교체합니다.
+            self.servers.allocations[run.playthrough_id] = allocation
+            run.server_allocations.append(allocation)
+            run.migration_left = 10
+            self._emit(run, 'migration', '작업 이전 확정 · 기존 수행/진행률/운영 모드/완료 기한 유지 · 준비 10분.\n'
+                       +'서버 배정: '+', '.join(f'{s.server_id} GPU{s.gpu}/전력{s.power}' for s in server_plan))
+            self._feedback(run, '이전 계획을 확인했습니다. 10분 준비 후 기존 작업을 계속해 주세요.', 'customer_migration')
+
+    def _advance_repairs(self):
+        for server_id, health in tuple(self.servers.hardware.items()):
+            if health.state != 'REPAIRING':
+                continue
+            left = health.repair_left-10
+            self.servers.hardware[server_id] = ServerHealth('REPAIRING', left, health.reason) if left else ServerHealth()
+            if not left:
+                for run in self.runs.values():
+                    allocation = self.servers.allocations.get(run.playthrough_id)
+                    if allocation and any(s.server_id == server_id for s in allocation.slices):
+                        self._emit(run, 'hardware_recovered', f'Server {server_id} 장비 복구 완료. 남은 다른 장애/준비가 없으면 다음 시간 구간부터 실행합니다.')
+                        pending = self.hardware_status(run)
+                        if run.state.phase in ('incident', 'paused', 'recovering'):
+                            pending += ' · 기존 네트워크 상태/준비는 별도 확인해 주세요.'
+                        self._feedback(run, f'Server {server_id} 장비 복구 완료를 확인했습니다. '
+                                       +(pending or '다음 시간 구간부터 작업을 계속해 주세요.'), 'customer_hardware_recovered')
 
     def _emit(self, run, kind, text):
         message = f'[{self.time_label}] {text}'
@@ -291,7 +399,7 @@ class GameSession:
             self._emit(run,'decision','요청을 수락했습니다. GPU와 전력은 아직 배정하지 않았습니다.')
             self._feedback(run,'자원 배정 일정을 확인했습니다. 완료 기한에 맞춰 진행 부탁드립니다.', 'customer_accept')
 
-    def _start(self, run, key, retry=False):
+    def _start(self, run, key, retry=False, server_plan=None):
         s = run.state
         if run.terms and self.minute >= run.terms['expires'] and not retry:
             raise ValueError('최종 배정 기한을 초과한 요청입니다.')
@@ -301,12 +409,21 @@ class GameSession:
             raise ValueError('대안에 대한 고객 답변을 확인하거나 고객이 동의한 운영 모드를 선택해 주세요.')
         p = s.plans[key]
         shortage = []
-        for name,needed,available in (('GPU',p['gpu'],self.center.available_gpu()),('전력',p['power'],self.center.available_power())):
+        available_gpu, available_power = self.servers.available()
+        for name,needed,available in (('GPU',p['gpu'],min(self.center.available_gpu(), available_gpu)),
+                                      ('전력',p['power'],min(self.center.available_power(), available_power))):
             if needed > available:
                 shortage.append(f'{name} {needed-available}{"개" if name=="GPU" else "단위"}')
         if shortage:
             raise ValueError('자원 부족: '+' / '.join(shortage)+'. 대기하거나 다른 작업 완료를 기다리세요.')
-        parts = self.servers.plan(p['gpu'], p['power'])
+        if server_plan is None:
+            parts = self.servers.plan(p['gpu'], p['power'])
+        else:
+            try:
+                self.servers.validate_plan(server_plan, p['gpu'], p['power'])
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f'선택한 배정안을 사용할 수 없습니다: {exc} 현재 자원으로 배정 계획을 다시 확인해 주세요.') from exc
+            parts = server_plan
         if parts is None:
             raise ValueError('서버별 GPU·전력의 동시 배정 조합이 성립하지 않습니다. 다른 작업 완료를 기다리세요.')
         s.choose_plan(key)
@@ -331,12 +448,12 @@ class GameSession:
             run.terms['started'] = self.minute
         self._feedback(run,'현재 작업이 진행 중인 것으로 확인했습니다. 완료 결과를 기다리겠습니다.', 'customer_start')
 
-    def choose_plan(self, key):
+    def choose_plan(self, key, server_plan=None):
         run = self.current
         if run.request['status'] not in ('new','review','waiting'):
             raise ValueError('이미 처리한 요청은 중복 수락할 수 없습니다.')
         with self._atomic():
-            self._start(run,key)
+            self._start(run,key,server_plan=server_plan)
             self._refresh_request(run)
         return run.messages[-2:]
 
@@ -357,13 +474,25 @@ class GameSession:
 
     def allocation_preview(self, run, key):
         """조회만 수행하며 실제 시작도 같은 탐색/동의 검증을 다시 적용합니다."""
+        if (run.state.allocated or run.request['status'] in ('completed','rejected')) and not (
+                run.state.phase == 'finished' and not run.state.succeeded and not run.followup_closed):
+            return {'allowed':False, 'reason':'이미 배정했거나 종료된 요청', 'slices':None}
+        if run.terms and self.minute >= run.terms['expires'] and run.state.phase != 'finished':
+            return {'allowed':False, 'reason':'최종 배정 기한 초과', 'slices':None}
         if not self.plan_agreed(run, key):
             return {'allowed':False, 'reason':'고객 동의 확인 필요', 'slices':None}
         p = run.state.plans[key]
-        if p['gpu'] > self.center.available_gpu() or p['power'] > self.center.available_power():
-            return {'allowed':False, 'reason':'전체 GPU 또는 전력 부족', 'slices':None}
+        gpu, power = self.servers.available()
+        if p['gpu'] > min(gpu, self.center.available_gpu()) or p['power'] > min(power, self.center.available_power()):
+            return {'allowed':False, 'reason':'정상 가용 GPU 또는 전력 부족', 'slices':None}
         parts = self.servers.plan(p['gpu'], p['power'])
         return {'allowed':parts is not None, 'reason':'배정 가능' if parts else '서버별 GPU·전력 조합 불가', 'slices':parts}
+
+    def allocation_options(self, run, key):
+        """고객 조건을 먼저 검사한 뒤 비교 가능한 최대 3개 안을 조회합니다."""
+        preview = self.allocation_preview(run, key)
+        p = run.state.plans.get(key)
+        return {**preview, 'options':self.servers.options(p['gpu'], p['power']) if preview['allowed'] else ()}
 
     def allocation_summary(self, parts):
         return '\n'.join(f'Server {s.server_id}: GPU {s.gpu} / 전력 {s.power} → '
@@ -497,6 +626,7 @@ class GameSession:
         if s.phase == 'finished' and run.request['status'] == 'operating':
             if run.playthrough_id in self.servers.allocations:
                 self.servers.release(run.playthrough_id)
+            run.migration_left = 0
             late = 0
             if run.terms:
                 t = run.terms
@@ -566,7 +696,20 @@ class GameSession:
                 self.minute += 10
                 for run in list(self.runs.values()):
                     before = run.state.phase
-                    run.state.advance(10)
+                    if run.state.allocated and self.hardware_servers(run):
+                        run.state.elapsed += 10
+                        run.hardware_downtime += 10
+                    elif run.state.allocated and run.migration_left:
+                        run.state.elapsed += 10
+                        run.migration_downtime += 10
+                        run.migration_left -= 10
+                        if not run.migration_left:
+                            self._emit(run, 'migration_ready', '작업 이전 준비 완료. 남아 있는 네트워크 상태를 유지하며 다음 구간부터 실행합니다.')
+                            self._feedback(run, '작업 이전 준비가 끝났습니다. '
+                                           +('기존 네트워크 장애/준비는 별도로 확인해 주세요.' if run.state.phase != 'running' else
+                                             '다음 시간 구간부터 기존 작업을 계속해 주세요.'), 'customer_migration_ready')
+                    else:
+                        run.state.advance(10)
                     if before == 'running' and run.state.phase == 'incident':
                         self._emit(run,'incident',f'긴급 경고! {run.mission["country"]} 네트워크 장애 감지. 작업 진행이 멈췄습니다.')
                         self._feedback(run,'작업이 지연되고 있습니다. 현재 복구 상황을 알려주세요.', 'customer_incident')
@@ -575,6 +718,7 @@ class GameSession:
                         self._feedback(run,'작업이 재개된 것을 확인했습니다. 남은 일정에 맞춰 진행 부탁드립니다.', 'customer_recovery')
                     self._finish_if_needed(run)
                     self._check_deadlines(run)
+                self._advance_repairs()
                 self._deliver_scheduled_requests()
 
     def respond(self, key):
@@ -596,7 +740,10 @@ class GameSession:
             run.delay_notice_key = self._delay_notice_key(run)
             if run.state.allocated:
                 run.state.cost_penalty += 5
-            if run.state.phase in ('incident','paused','recovering'):
+            if self.hardware_servers(run) or run.migration_left:
+                self._emit(run,'notice','고객에게 서버 장애/이전 준비로 인한 지연을 안내했습니다.\n'+self.delay_reason(run))
+                text = '서버 복구·작업 이전 일정을 확인했습니다. 기존 완료 기한은 유지됩니다.'
+            elif run.state.phase in ('incident','paused','recovering'):
                 self._emit(run,'notice','고객에게 장애와 지연을 안내하고 복구 계획을 전달했습니다.\n'+self.delay_reason(run))
                 text = '안내 감사합니다. 복구 작업이 완료될 때까지 기다리겠습니다.'
             else:
@@ -613,10 +760,13 @@ class GameSession:
         s = run.state
         if not s.allocated or run.followup_closed:
             return ''
-        finish, due = self.minute+s.remaining_minutes, run.terms.get('due')
+        repair = max((self.servers.hardware[key].repair_left for key in self.hardware_servers(run)), default=0)
+        finish, due = self.minute+s.remaining_minutes+run.migration_left+repair, run.terms.get('due')
         issue = (f'네트워크 장애 · 필요 {s.network_needed} / 가용 {s.network_available} · '
                  f'중단 {s.downtime}/60분 · 대응 {s.response_attempts}/3 · 복구 시각 미정' if s.phase in ('incident','paused') else
                  f'복구·재처리 준비 {s.recovery_left}분 · 일정 변경 안내 필요' if s.phase == 'recovering' else '')
+        hardware = self.hardware_status(run)
+        issue = '\n'.join(v for v in (hardware, issue) if v)
         if due is not None and (finish > due or self.minute > due):
             timing = (f'완료 기한 {game_time(due)} / 예상 완료 {game_time(finish)} / '
                       f'{max(0, finish-due)}분 지연 예상')
@@ -630,6 +780,11 @@ class GameSession:
             return None
         s = run.state
         base = [s.retry_count, run.terms.get('due'), self.minute > run.terms['due'] if run.terms else False]
+        if self.hardware_servers(run) or run.migration_left:
+            events = sum(e['kind'] in ('hardware_fault', 'hardware_repair', 'migration')
+                         for e in self.db.get_request_events(run.request['id']))
+            return base + ['hardware', list(self.hardware_servers(run)), bool(run.migration_left), events,
+                           s.phase, s.response_attempts]
         if s.phase in ('incident','paused'):
             # 중단 중 시간 경과만으로 같은 장애 안내가 다시 활성화되지 않습니다.
             incidents = sum(e['kind'] == 'incident' for e in self.db.get_request_events(run.request['id']))
@@ -687,6 +842,8 @@ class GameSession:
         # 읽지 않은 사건은 시간순으로 표시하고, 협의 중인 대안은 재열람해도 비교 내용을 유지합니다.
         lifecycle = {'customer_request','customer_accept','customer_start','customer_incident',
                      'customer_recovery','customer_complete','customer_failure','customer_reject','customer_expired',
+                     'customer_hardware_fault','customer_hardware_repair','customer_hardware_recovered',
+                     'customer_migration','customer_migration_ready',
                      'proposal'}
         boundary = max((e['id'] for e in events if e['kind'] in lifecycle), default=0)
         if run.proposals and run.request['status'] in ('new','review','waiting'):
