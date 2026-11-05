@@ -13,7 +13,9 @@ FONT = 'Malgun Gothic'
 MONO = 'Consolas'
 
 
-OWNER_COLORS = {'sg': CYAN, 'jp': BLUE, 'us': PURPLE}
+OWNER_COLORS = {'sg': '#75fff0', 'jp': BLUE, 'us': PURPLE}
+OWNER_BOARDS = {'sg': '#194c47', 'jp': '#193650', 'us': '#35294b'}
+OWNER_DIM_COLORS = {'sg': '#48c8ba', 'jp': '#527fbd', 'us': '#876da9'}
 
 def availability_hint(available, total, required=None, fault=False):
     if fault:
@@ -44,13 +46,15 @@ def gpu_module(canvas, x, y, width, height, state, owner=None, index=0, tags=(),
     width, height = min(width, 64), min(height, 27)
     color = RED if state == 'fault' else OWNER_COLORS.get(owner, CYAN) if state == 'busy' else CYAN
     empty = state == 'empty'
-    board = '#0b101b' if state in ('fault', 'empty') else '#102e30' if state == 'available' else '#192b40'
+    board = ('#0b101b' if state in ('fault', 'empty') else '#102e30' if state == 'available'
+             else OWNER_BOARDS.get(owner, '#192b40'))
     edge = '#283645' if empty else '#653d4a' if state == 'fault' else '#346a69' if state == 'available' else color
     # 바깥 장착 홈과 절삭된 PCB 모서리. 배터리의 단자/충전 막대는 사용하지 않습니다.
     canvas.create_rectangle(x, y, x+width, y+height, fill='#080f19', outline='#23374b', tags=tags)
     canvas.create_polygon(x+3, y+2, x+width-6, y+2, x+width-2, y+6,
                           x+width-2, y+height-3, x+6, y+height-3, x+3, y+height-6,
-                          fill=board, outline=edge, tags=tags+body_tags+('gpu-body', f'gpu-{state}'))
+                          fill=board, outline=edge, width=2 if state == 'busy' else 1,
+                          tags=tags+body_tags+('gpu-body', f'gpu-{state}', f'gpu-owner-{owner or "none"}'))
     led = canvas.create_oval(x+width-6, y+3, x+width-3, y+6,
                              fill='#263342' if empty else color, outline='',
                              tags=tags+('gpu-led',)+(('available-gpu',) if state == 'available' else ()))
@@ -96,7 +100,10 @@ def animate_hardware(canvas, phase):
         if state == 'available':
             canvas.itemconfigure(led, fill=CYAN if phase % 2 else '#329f97')
     for trace, state, color in canvas.gpu_traces:
-        if state in ('available', 'busy'):
+        if state == 'busy':
+            owner = next((key for key, value in OWNER_COLORS.items() if value == color), None)
+            canvas.itemconfigure(trace, fill=color if phase % 2 else OWNER_DIM_COLORS.get(owner, color))
+        elif state == 'available':
             canvas.itemconfigure(trace, fill=color if phase % 2 else '#2c515a')
 
 

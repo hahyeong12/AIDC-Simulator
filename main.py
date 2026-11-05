@@ -1,33 +1,51 @@
-"""AIDC Simulator v0.8-4: 서버 장애·장비 복구·작업 이전을 운영하는 관제실."""
+"""AIDC Simulator v0.9-1a: 첫 출근부터 업무 완료와 모드 전환까지."""
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from database import Database
+from database import Database, DB_PATH, STORY_DB_PATH
 from session import GameSession, MAX_PENDING_REQUESTS
 from game import RESPONSES, game_time
-from server_console import LiveOverview, LiveServerRoom, ServerPanel
+from server_console import LiveOverview, LiveServerRoom, ServerPanel, server_views
 from allocation_dialog import AllocationDialog
+from server_widgets import gpu_module, reset_hardware
+from story import GUIDES, STEPS, Dialogue
+from chapter_dialog import ChapterCompleteDialog
 from ui import (BG, PANEL, BORDER, TEXT, MUTED, CYAN, GREEN, RED, AMBER, FONT,
                 ActionButton, RejectionDialog, MessageDialog,
                 TextDialog, label, request_status_of, status_of)
 
 
 class SimulatorApp:
-    def __init__(self, root, db=None, **session_options):
+    def __init__(self, root, db=None, db_factory=Database, **session_options):
         self.root = root
-        root.title('AIDC Simulator v0.8-4 | 울산 AI 데이터센터 관제실')
+        self.db_factory, self.closed, self.transitioning = db_factory, False, False
+        root.title('AIDC Simulator v0.9-1a | 울산 AI 데이터센터 관제실')
         root.geometry(f'{min(1280, root.winfo_screenwidth()-40)}x{min(680, root.winfo_screenheight()-100)}')
         root.minsize(1000, 650)
         root.configure(bg=BG)
-        self.db = db if db is not None else Database()
-        self.session = GameSession(self.db, **session_options)
+        self.db = db if db is not None else Database(STORY_DB_PATH if session_options.get('mode') == 'story' else DB_PATH)
+        try:
+            self.session = GameSession(self.db, **session_options)
+        except Exception:
+            if db is None:
+                self.db.close()
+            raise
         self.center = self.session.center
         self.message_window = None
         self.allocation_window = None
+        self.story_window = None
+        self.chapter_window = None
         self.setup_ui()
+        if self.session.story:
+            self.resources.book.select(self.resources.inspector_frame)
         self.refresh()
         self.network.start()
         root.protocol('WM_DELETE_WINDOW', self.on_close)
+        if self.session.story:
+            if self.session.story.chapter_completed:
+                self.show_chapter_complete()
+            else:
+                self.show_story_help()
 
     @property
     def state(self):
@@ -55,10 +73,13 @@ class SimulatorApp:
         header = tk.Frame(self.root, bg=BG, padx=16, pady=8)
         header.grid(row=0, sticky='ew')
         label(header, 'AIDC', 22, CYAN, True).pack(side='left')
-        label(header, 'ULSAN / CONTROL ROOM  v0.8-4', 11, bold=True).pack(side='left', padx=12)
+        mode_label = '스토리 모드' if self.session.story else '자유 운영 모드'
+        label(header, f'ULSAN / v0.9-1a · {mode_label}', 10, bold=True).pack(side='left', padx=12)
         self.notice_var = tk.StringVar()
         self.notice_button = ActionButton(header, 'AIDC LINK', self.open_latest_message)
         self.notice_button.pack(side='right')
+        self.mode_select_button = ActionButton(header, '모드 선택', self.return_to_modes)
+        self.mode_select_button.pack(side='right', padx=(0, 8))
         self.status_var = tk.StringVar()
         tk.Label(header, textvariable=self.status_var, bg=BG, fg=CYAN, font=(FONT, 11),
                  justify='right').pack(side='right', padx=14)
@@ -73,7 +94,7 @@ class SimulatorApp:
         left = tk.Frame(body, bg=PANEL, padx=6, pady=5)
         left.grid(row=0, column=0, sticky='nsew', padx=(0, 10))
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(1, weight=2, minsize=55)
+        left.rowconfigure(1, weight=2, minsize=58 if self.session.story else 55)
         left.rowconfigure(4, weight=1, minsize=60)
         label(left, 'AIDC LINK · 고객 요청함', 11, bold=True).grid(row=0, sticky='w', pady=(0, 5))
         self.inbox = self.make_list(left, ('client', 'status'), ('고객 / 국가', '상태 / 기한'), (110, 100), 4)
@@ -102,7 +123,7 @@ class SimulatorApp:
             lambda:self.session.inject_server_fault(self.resources.selected)))
         self.resources.repair_button.configure(command=lambda:self._perform(
             lambda:self.session.begin_server_repair(self.resources.selected)))
-        self.network = self.server_room = LiveServerRoom(middle, self.session, self.resources.select_server)
+        self.network = self.server_room = LiveServerRoom(middle, self.session, self.select_server)
         self.network.pack(fill='both', expand=True)
         self.alert = label(middle, size=10, color=AMBER, justify='left', wraplength=400)
         self.alert.pack(fill='x', pady=(3, 0))
@@ -142,6 +163,19 @@ class SimulatorApp:
         ActionButton(tools, '대화 기록', self.show_conversation_history).pack(side='right', padx=(6, 0))
         ActionButton(tools, '수행 기록', self.show_history).pack(side='right', padx=6)
         ActionButton(tools, '이벤트 / 로그', self.show_events).pack(side='right', padx=6)
+        if self.session.story:
+            self.story_bar = tk.Frame(self.root, bg=PANEL, padx=12, pady=5)
+            self.story_bar.grid(row=5, sticky='ew', padx=12, pady=(0, 5))
+            self.story_bar.columnconfigure(0, weight=1)
+            self.story_objective = label(self.story_bar, size=9, color=CYAN, anchor='w', justify='left')
+            self.story_objective.grid(row=0, column=0, sticky='ew')
+            self.story_objective.bind('<Configure>', lambda e:self.story_objective.configure(wraplength=max(300, e.width-4)))
+            self.story_help_button = ActionButton(self.story_bar, '교육 도움말', self.show_story_help)
+            self.story_help_button.grid(row=0, column=1, padx=6)
+            self.story_skip_button = ActionButton(self.story_bar, '튜토리얼 건너뛰기', self.skip_tutorial, accent=AMBER)
+            self.story_skip_button.grid(row=0, column=2)
+            self.story_complete_button = ActionButton(self.story_bar, 'Chapter 1 완료', self.show_chapter_complete)
+            self.resources.book.bind('<<NotebookTabChanged>>', self.on_story_preview, add='+')
 
     def make_list(self, parent, columns, names, widths, height):
         tree = ttk.Treeview(parent, columns=columns, show='headings', height=height, selectmode='browse')
@@ -156,6 +190,17 @@ class SimulatorApp:
         self.update_status()
         self.render_actions()
         self.preview_plan()
+        if self.session.story:
+            story = self.session.story
+            self.story_objective.configure(text=f'Chapter {story.chapter} · 현재 목표: {story.objective}')
+            self.story_skip_button.configure(state='disabled' if story.tutorial_completed else 'normal')
+            if story.chapter_completed:
+                self.story_skip_button.grid_remove()
+                self.story_complete_button.grid(row=0, column=2)
+            else:
+                self.story_complete_button.grid_remove()
+            self.network.configure(highlightbackground=CYAN if story.step == 'server' else BORDER)
+            self.time_buttons[10].configure(bg=BORDER if story.step == 'time' else PANEL)
 
     def update_status(self):
         active = [r for r in self.session.runs.values() if r.state.phase in ('running','incident','paused','recovering')]
@@ -211,6 +256,10 @@ class SimulatorApp:
         limit_note = ' · 접수 보류' if pending >= MAX_PENDING_REQUESTS else ''
         self.arrival_schedule.configure(text=f'다음 {self.session.next_arrival_label} · '
                                        f'{pending}/{MAX_PENDING_REQUESTS}'+(' 보류' if limit_note else ''))
+        if self.session.story:
+            self.arrival_schedule.configure(text='Chapter 1 · 미션에 따라 요청 접수')
+            if not incoming:
+                self.arrival_notice.configure(text='Chapter 1 · 첫 고객 업무', fg=MUTED)
         faults = [r for r in active if r.state.phase in ('incident','paused')]
         self.alert.configure(text='! ' + ' · '.join(r.mission['country'] for r in faults)+' 장애 / 중단 · 대응을 선택하세요' if faults else '정상 작업은 시간 진행 버튼으로 함께 처리됩니다.')
         hardware = [key for key,value in self.session.servers.hardware.items() if value.state != 'HEALTHY']
@@ -299,6 +348,8 @@ class SimulatorApp:
                        ('report','처리 불가 · 최종 보고',lambda: self._perform(self.session.report_failure))]
         else:
             options = [('restart','같은 고객의 새 요청',self.new_mission)]
+        if self.session.story:
+            options = [option for option in options if option[0] != 'restart']
         if not self.session.can_notify_delay(self.session.current):
             options = [option for option in options if option[0] != 'delay']
         if self.session.hardware_servers(self.session.current) and not self.session.current.migration_left:
@@ -315,16 +366,140 @@ class SimulatorApp:
             self.action_buttons[key] = b
 
     def _perform(self, action):
+        story = self.session.story
+        previous = (story.step, story.tutorial_completed, story.chapter_completed) if story else None
         try:
             action()
         except Exception as exc:
             messagebox.showerror('처리 오류', str(exc), parent=self.root)
             return False
         self.refresh()
+        if story:
+            current = self.session.story
+            if current.chapter_completed and not previous[2]:
+                self.show_chapter_complete()
+            elif previous[1] != current.tutorial_completed or (previous[0] != current.step and current.step in ('time', 'operations')):
+                self.show_story_help()
         return True
+
+    def select_server(self, key):
+        previous = self.resources.selected
+        self.resources.select_server(key)
+        if self.session.story:
+            if not self._perform(lambda:self.session.select_story_server(key)):
+                self.resources.select_server(previous)
+                self.network.selected = previous
+                self.network.redraw()
+            elif self.session.story.step == 'resources':
+                self.show_story_help()
+
+    def show_story_help(self):
+        story = self.session.story
+        if not story:
+            return None
+        if self.story_window is not None and self.story_window.winfo_exists():
+            self.story_window.destroy()
+        confirms = {'arrival':('첫 업무 시작', lambda:self.confirm_story_step(self.session.confirm_story_arrival)),
+                    'resources':('자원 정보 확인', self.confirm_story_resources),
+                    'operations':('운영 상태 확인', lambda:self.confirm_story_step(self.session.confirm_story_operations))}
+        confirm = confirms.get(story.step) if not story.chapter_completed and not story.skipped else None
+        pages = [line.page() for line in story.dialogue]
+        if story.step == 'operations' and not story.chapter_completed:
+            run = self.session.runs[story.request_id]
+            remaining = '\n'.join(f'Server {v["spec"].key}: GPU {v["gpu_available"]} · 전력 {v["power_available"]}'
+                                  for v in server_views(self.session))
+            info = (f'예상 완료: {game_time(self.session.minute+run.state.remaining_minutes)}\n'
+                    + self.session.deadline_summary(run) + '\n\n서버별 잔여 자원\n' + remaining)
+            pages.append(Dialogue('system', info).page())
+        self.story_window = MessageDialog(
+            self.root, '교육 담당자', '울산 AIDC 운영팀',
+            pages, animate=False,
+            message_kind=f'교육 안내 · Chapter {story.chapter}', confirm=confirm,
+            history_hint='현재 안내는 운영실 [교육 도움말]에서 다시 보기')
+        # 창 닫기/대화 페이지 건너뛰기는 스토리 단계 완료가 아닙니다.
+        self.story_window.skip_button.configure(text='마지막 안내')
+        return self.story_window
+
+    def confirm_story_step(self, action):
+        if self._perform(action):
+            self.show_story_help()
+            return True
+        return False
+
+    def on_story_preview(self, _=None):
+        if self.closed or self.transitioning:
+            return
+        story = self.session.story
+        if (story and not story.preview_confirmed and not story.tutorial_completed and story.request_read
+                and self.resources.book.select() == str(self.resources.review_frame)):
+            self._perform(lambda:self.session.inspect_story_preview(self.session.selected_id))
+
+    def show_story_review(self):
+        pages = [line.page() for key in STEPS for line in GUIDES[key][1]]
+        window = MessageDialog(self.root, '교육 복습', '울산 AIDC 운영팀', pages, animate=False,
+                               message_kind='교육 내용 다시 보기', history_hint='복습은 업무 진행 상태를 바꾸지 않습니다.')
+        window.skip_button.configure(text='마지막 안내')
+        return window
+
+    def show_story_status(self):
+        story = self.session.story
+        text = ('Chapter 1 · '+('완료' if story.chapter_completed else '진행 중')
+                + '\n튜토리얼 안내: '+('완료' if story.tutorial_completed else '진행 중')
+                + '\n첫 고객 업무: '+('정상 완료' if story.first_work_completed else '미완료')
+                + '\n\nChapter 2 · 이후 개발 예정\n현재 선택할 수 있는 후속 미션은 없습니다.')
+        return TextDialog(self.root, '스토리 진행 현황', text)
+
+    def show_chapter_complete(self):
+        if self.chapter_window is not None and self.chapter_window.winfo_exists():
+            self.chapter_window.lift()
+            return self.chapter_window
+        if self.story_window is not None and self.story_window.winfo_exists():
+            self.story_window.destroy()
+        self.chapter_window = ChapterCompleteDialog(
+            self.root, self.session.chapter_result(), self.return_to_modes,
+            lambda:self.return_to_modes('free'), self.show_story_status, self.show_story_review)
+        return self.chapter_window
+
+    def return_to_modes(self, mode=None):
+        if self.closed or self.transitioning:
+            return False
+        self.transitioning = True
+        try:
+            self.session.close()
+        except Exception as exc:
+            self.transitioning = False
+            messagebox.showerror('저장 오류', f'현재 상태를 저장하지 못해 모드를 전환하지 않았습니다.\n{exc}', parent=self.root)
+            return False
+        self.closed = True
+        self.network.stop()
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        self.root.rowconfigure(2, weight=0)
+        self.mode_selector = ModeSelection(self.root, db_factory=self.db_factory)
+        if mode is not None:
+            self.mode_selector.start(mode)
+        return True
+
+    def confirm_story_resources(self):
+        if self.resources.selected != 'A':
+            messagebox.showerror('교육 안내', 'Server A를 다시 선택하고 Inspector를 확인해 주세요.', parent=self.root)
+            return False
+        self.resources.book.select(self.resources.inspector_frame)
+        if self._perform(self.session.confirm_story_resources):
+            self.show_story_help()
+            return True
+        return False
+
+    def skip_tutorial(self):
+        if not self.session.story or self.session.story.tutorial_completed:
+            return False
+        if messagebox.askyesno('튜토리얼 건너뛰기',
+                               '교육 안내를 건너뛸까요? 고객 업무는 직접 진행하며 스토리 모드는 유지됩니다.', parent=self.root):
+            return self._perform(self.session.skip_tutorial)
+        return False
     def select_request(self, rid):
         success = self._perform(lambda: self.session.select(rid))
-        if success and hasattr(self, 'resources') and not self.state.allocated:
+        if success and hasattr(self, 'resources') and not self.state.allocated and not self.session.story:
             self.resources.show_preview()
         return success
     def choose_plan(self, key):
@@ -336,6 +511,9 @@ class SimulatorApp:
         self.allocation_window = AllocationDialog(
             self.root, self.session, self.plan_var.get(),
             lambda mode, parts: self._perform(lambda: self.session.choose_plan(mode, server_plan=parts)))
+        if self.session.story and not self._perform(lambda:self.session.inspect_story_preview(self.session.selected_id)):
+            self.allocation_window.destroy()
+            return None
         return self.allocation_window
     def open_migration_plans(self):
         if self.allocation_window is not None and self.allocation_window.winfo_exists():
@@ -397,7 +575,7 @@ class SimulatorApp:
         if self.message_window is not None and self.message_window.winfo_exists():
             self.message_window.destroy()
         run = self.session.current
-        if not run.state.allocated:
+        if not run.state.allocated and not self.session.story:
             self.resources.show_preview()
         confirm = None
         if (run.proposals and run.proposals[-1]['status'] == 'pending'
@@ -443,18 +621,75 @@ class SimulatorApp:
             return TextDialog(self.root, f'수행 기록 #{selected[0]}', '\n\n'.join(
                 f'{r["created_at"]}\n{r["message"]}' for r in self.session.logs(int(selected[0]))))
     def on_close(self):
+        if self.closed:
+            return
         try:
             self.session.close()
         except Exception as exc:
             messagebox.showerror('저장 오류', f'현재 상태를 저장하지 못해 종료하지 않았습니다.\n{exc}', parent=self.root)
             return
         self.network.stop()
+        self.closed = True
         self.root.destroy()
+
+
+class ModeSelection:
+    """시작 시에만 표시합니다. SimulatorApp 직접 생성은 기존 자유 운영 방식입니다."""
+    def __init__(self, root, db_factory=Database):
+        self.root, self.db_factory, self.app = root, db_factory, None
+        root.protocol('WM_DELETE_WINDOW', root.destroy)
+        root.title('AIDC Simulator v0.9-1a | 모드 선택')
+        root.geometry('1000x650')
+        root.minsize(1000, 650)
+        root.configure(bg=BG)
+        self.frame = tk.Frame(root, bg=BG, padx=70, pady=60)
+        self.frame.pack(fill='both', expand=True)
+        title = tk.Frame(self.frame, bg=BG)
+        title.pack(anchor='w')
+        icon = tk.Canvas(title, width=76, height=40, bg=BG, highlightthickness=0)
+        icon.pack(side='left', padx=(0, 12))
+        reset_hardware(icon)
+        gpu_module(icon, 6, 6, 64, 27, 'available')
+        label(title, 'AIDC Simulator', 30, CYAN, True).pack(side='left')
+        label(self.frame, '울산 AI 데이터센터 운영 시뮬레이션', 14, MUTED).pack(anchor='w', pady=(8, 35))
+        self.buttons = {}
+        for mode, title, text in (
+            ('story', '스토리 모드', '신입 엔지니어로 첫 출근하여 데이터센터 운영을 배우고 단계별 미션에 도전합니다.'),
+            ('free', '자유 운영 모드', '기존 데이터센터 운영 기록을 이어가거나 고객 요청을 자유롭게 처리합니다.')):
+            card = tk.Frame(self.frame, bg=PANEL, padx=22, pady=18)
+            card.pack(fill='x', pady=(0, 18))
+            self.buttons[mode] = ActionButton(card, title, lambda m=mode:self.start(m))
+            self.buttons[mode].pack(anchor='w')
+            label(card, text, 11, MUTED, wraplength=760, justify='left').pack(anchor='w', pady=(10, 0))
+        label(self.frame, 'v0.9-1a · 현재 스토리는 Chapter 1까지 제공됩니다.', 10, MUTED).pack(anchor='w')
+
+    def start(self, mode):
+        if self.app is not None:
+            return self.app
+        if mode not in ('free', 'story'):
+            raise ValueError('존재하지 않는 게임 모드입니다.')
+        db = None
+        before = set(self.root.winfo_children())
+        try:
+            db = self.db_factory(STORY_DB_PATH if mode == 'story' else DB_PATH)
+            self.frame.pack_forget()
+            self.app = SimulatorApp(self.root, db=db, db_factory=self.db_factory, mode=mode)
+        except Exception as exc:
+            if db is not None:
+                db.close()
+            for widget in set(self.root.winfo_children()) - before:
+                widget.destroy()
+            self.root.rowconfigure(2, weight=0)
+            self.frame.pack(fill='both', expand=True)
+            messagebox.showerror('게임 시작 오류', str(exc), parent=self.root)
+            return None
+        self.frame.destroy()
+        return self.app
 
 
 def main():
     root = tk.Tk()
-    SimulatorApp(root)
+    ModeSelection(root)
     root.mainloop()
 
 

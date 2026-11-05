@@ -85,13 +85,15 @@ class TextDialog(tk.Toplevel):
 
 class MessageDialog(tk.Toplevel):
     """타이핑 완성과 페이지 이동을 다음 버튼 하나로 처리하는 업무 메신저."""
-    def __init__(self, parent, company, country, steps, animate=True, message_kind='업무 메시지', confirm=None):
+    def __init__(self, parent, company, country, steps, animate=True, message_kind='업무 메시지', confirm=None,
+                 history_hint='과거 내용은 운영실 [대화 기록]'):
         super().__init__(parent, bg=BG)
         self.title(f'AIDC LINK | {company} · {country}')
         self.geometry('760x470')
         self.minsize(610, 390)
         self.steps, self.index, self.animate = steps, 0, animate
         self.message_kind = message_kind
+        self.history_hint = history_hint
         self.confirm = confirm
         self.timer, self.shown = None, 0
         self.columnconfigure(0, weight=1)
@@ -125,7 +127,7 @@ class MessageDialog(tk.Toplevel):
         self._cancel()
         speaker, self.full_text = self.steps[self.index]
         self.speaker.configure(text=speaker)
-        self.page.configure(text=f'{self.index+1} / {len(self.steps)}   ·   {self.message_kind} · 과거 내용은 운영실 [대화 기록]')
+        self.page.configure(text=f'{self.index+1} / {len(self.steps)}   ·   {self.message_kind} · {self.history_hint}')
         self.previous_button.configure(state='normal' if self.index else 'disabled')
         final_text = self.confirm[0] if self.confirm else '확인 · 운영실로'
         self.next_button.configure(text=final_text if self.index == len(self.steps)-1 else '다음 ▶')

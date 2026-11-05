@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 DB_PATH = Path(__file__).with_name("aidc_game.db")
+STORY_DB_PATH = Path(__file__).with_name("aidc_story.db")
 
 
 def now_text() -> str:

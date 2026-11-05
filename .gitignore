@@ -5,3 +5,6 @@ __pycache__/
 aidc_game.db
 aidc_game.db-journal
 aidc_game.db-*
+aidc_story.db
+aidc_story.db-journal
+aidc_story.db-*

@@ -7,6 +7,7 @@ import random
 from database import Database
 from game import DataCenter, GameState, RESPONSES, request_terms, request_conditions, game_time
 from server_resources import ServerPool, Allocation, SERVERS, ServerHealth
+from story import StoryProgress
 
 REQUEST_LABELS = {'new':'신규 요청','review':'검토 중','waiting':'대기',
                   'operating':'수락','rejected':'거절','completed':'처리 완료'}
@@ -38,11 +39,23 @@ class MissionRun:
 
 
 class GameSession:
-    def __init__(self, db: Database, seed=None, incident_chance=None):
+    def __init__(self, db: Database, seed=None, incident_chance=None, mode='free'):
         self.db, self.center = db, DataCenter()
         self.servers = ServerPool()
         self.missions = {m['id']:m for m in db.get_missions()}
         saved = db.get_simulation()
+        if mode not in ('free', 'story'):
+            raise ValueError('존재하지 않는 게임 모드입니다.')
+        if saved and saved.get('mode', 'free') != mode:
+            raise ValueError('선택한 모드와 저장 파일이 다릅니다. 모드별 저장 파일을 사용해 주세요.')
+        if mode == 'story' and not saved and db.get_requests():
+            raise ValueError('기존 자유 운영 요청을 스토리로 변경할 수 없습니다.')
+        self.mode = mode
+        if saved and mode == 'story' and not isinstance(saved.get('story'), dict):
+            raise ValueError('저장된 스토리 진행 기록을 찾을 수 없습니다.')
+        self.story = None
+        if mode == 'story' and not saved:
+            self.story = StoryProgress()
         self.minute = saved['minute'] if saved else 540
         self.seed = saved['seed'] if saved else (seed if seed is not None else random.SystemRandom().randrange(2**31))
         self.roll_index = saved['roll_index'] if saved else 0
@@ -53,6 +66,15 @@ class GameSession:
         self.selected_id = None
         for request in db.get_requests():
             self.runs[request['id']] = self._load_run(request)
+        if mode == 'story' and saved:
+            rid = saved['story'].get('request_id')
+            if type(rid) is not int or rid not in self.runs:
+                raise ValueError('스토리의 첫 고객 요청을 찾을 수 없습니다.')
+            run = self.runs[rid]
+            self.story = StoryProgress.from_payload(saved['story'], run, self.plan_agreed(run, run.state.plan))
+        if saved and self.story and (self.story.request_id not in self.runs
+                or self.runs[self.story.request_id].mission['country'] != '싱가포르'):
+            raise ValueError('스토리의 첫 고객 요청을 찾을 수 없습니다.')
         self._restore_servers()
         hardware = saved.get('server_health', {}) if saved else {}
         if not isinstance(hardware, dict) or set(hardware)-{s.key for s in SERVERS}:
@@ -72,6 +94,8 @@ class GameSession:
                                              max(times, default=self.minute-CUSTOMER_COOLDOWN))
         if not self.runs:
             self.deliver_next_request()
+        if self.story and self.story.request_id not in self.runs:
+            raise ValueError('스토리의 첫 고객 요청을 찾을 수 없습니다.')
         self.selected_id = next((rid for rid,r in self.runs.items() if r.request['status'] not in ('completed','rejected')),
                                 next(reversed(self.runs)))
 
@@ -83,6 +107,8 @@ class GameSession:
         return f'D{self.minute//1440+1} {self.minute//60%24:02d}:{self.minute%60:02d}'
     @property
     def has_next_request(self):
+        if self.story:
+            return False
         received = {r.mission['id'] for r in self.runs.values()}
         return any(mid not in received for mid in self.missions)
 
@@ -163,11 +189,14 @@ class GameSession:
                 run.server_allocations.append(self.servers.allocations[run.playthrough_id])
 
     def _persist(self):
-        self.db.save_simulation({'minute':self.minute,'seed':self.seed,'roll_index':self.roll_index,
+        payload = {'minute':self.minute,'seed':self.seed,'roll_index':self.roll_index,
                                  'server_health':{key:asdict(value) for key,value in self.servers.hardware.items()},
                                  'incident_chance':self.incident_chance,
                                  'arrivals':{'next_minute':self.next_arrival_minute, 'slot':self.arrival_index,
-                                             'last_by_mission':self.arrival_last}})
+                                             'last_by_mission':self.arrival_last}}
+        if self.story:
+            payload.update(mode=self.mode, story=self.story.payload())
+        self.db.save_simulation(payload)
         for rid,run in self.runs.items():
             state = {k:v for k,v in vars(run.state).items() if k != 'center'}
             self.db.save_runtime(rid,run.playthrough_id,{'state':state,'followup_closed':run.followup_closed,
@@ -189,10 +218,14 @@ class GameSession:
         arrivals = self.next_arrival_minute,self.arrival_index,dict(self.arrival_last)
         allocations = dict(self.servers.allocations)
         hardware = dict(self.servers.hardware)
+        story = deepcopy(self.story)
         histories = {rid:list(run.server_allocations) for rid, run in self.runs.items()}
         try:
             with self.db.transaction():
                 yield
+                if self.story and self.story.request_id in self.runs:
+                    run = self.runs[self.story.request_id]
+                    self.story.update(run, self.plan_agreed(run, run.state.plan))
                 self._persist()
         except Exception:
             self.runs.clear()
@@ -207,7 +240,67 @@ class GameSession:
             self.next_arrival_minute,self.arrival_index,self.arrival_last = arrivals
             self.servers.allocations = allocations
             self.servers.hardware = hardware
+            self.story = story
             raise
+
+    def select_story_server(self, server_id):
+        if not self.story or self.story.tutorial_completed:
+            return
+        if server_id not in {s.key for s in SERVERS}:
+            raise ValueError('존재하지 않는 서버입니다.')
+        with self._atomic():
+            # A 선택의 실제 관찰을 보존하며 이후 다른 서버를 봐도 교육 이력을 지우지 않습니다.
+            if server_id == 'A':
+                self.story.selected_server = server_id
+
+    def confirm_story_resources(self):
+        if not self.story or self.story.step != 'resources':
+            raise ValueError('먼저 Server A를 선택하고 Inspector를 확인해 주세요.')
+        with self._atomic():
+            self.story.resources_confirmed = True
+
+    def confirm_story_arrival(self):
+        if not self.story or self.story.step != 'arrival':
+            raise ValueError('현재는 첫 출근 안내 단계가 아닙니다.')
+        with self._atomic():
+            self.story.introduction_confirmed = True
+
+    def inspect_story_preview(self, request_id):
+        if not self.story or self.story.tutorial_completed or self.story.preview_confirmed:
+            return
+        if request_id != self.story.request_id or not self.story.request_read:
+            return
+        with self._atomic():
+            self.story.preview_confirmed = True
+
+    def confirm_story_operations(self):
+        if not self.story or self.story.step != 'operations':
+            raise ValueError('현재는 운영 상태 확인 단계가 아닙니다.')
+        if self.runs[self.story.request_id].state.work_done <= 0:
+            raise ValueError('실제 작업이 진행된 뒤 운영 상태를 확인해 주세요.')
+        with self._atomic():
+            self.story.operations_confirmed = True
+
+    def chapter_result(self):
+        if not self.story or not self.story.chapter_completed:
+            raise ValueError('첫 업무를 정상 완료한 뒤 결과를 확인할 수 있습니다.')
+        run = self.runs[self.story.request_id]
+        s = run.state
+        if not (s.phase == 'finished' and s.succeeded and run.request['status'] == 'completed'
+                and run.playthrough_id not in self.servers.allocations):
+            raise ValueError('고객 작업 완료와 자원 반환을 확인할 수 없습니다.')
+        statuses = {spec.key:(self.servers.hardware[spec.key].state if self.servers.hardware[spec.key].state != 'HEALTHY'
+                             else 'ACTIVE' if any(part.server_id == spec.key for a in self.servers.allocations.values()
+                                                  for part in a.slices) else 'IDLE') for spec in SERVERS}
+        return {'company':run.mission['company_name'], 'task':run.mission['title'], 'score':s.score,
+                'on_time':run.terms['completed'] <= run.terms['due'] if run.terms else None,
+                'gpu':s.gpu_used, 'power':s.power_used, 'servers':statuses,
+                'feedback':run.last_feedback, 'request_id':run.request['id'], 'playthrough_id':run.playthrough_id}
+
+    def skip_tutorial(self):
+        if self.story and not self.story.tutorial_completed:
+            with self._atomic():
+                self.story.skip()
 
     def hardware_servers(self, run):
         allocation = self.servers.allocations.get(run.playthrough_id)
@@ -349,6 +442,14 @@ class GameSession:
 
     def deliver_next_request(self):
         """최초 요청 접수 보조 함수. GUI는 시간 기반 자동 접수를 사용합니다."""
+        if self.story:
+            if self.runs:
+                return None
+            mid = next(mid for mid, m in self.missions.items() if m['country'] == '싱가포르')
+            with self._atomic():
+                rid = self._receive(mid, f'initial:{mid}')
+                self.story.request_id = rid
+            return rid
         received = {r.mission['id'] for r in self.runs.values()}
         for mid in self.missions:
             if mid not in received:
@@ -358,6 +459,8 @@ class GameSession:
         return None
 
     def _deliver_scheduled_requests(self):
+        if self.story:
+            return  # Chapter별 접수는 스토리 조건에서 명시적으로 실행합니다.
         while self.minute >= self.next_arrival_minute:
             due = self.next_arrival_minute
             slots = max(0, MAX_PENDING_REQUESTS-self.pending_request_count)
@@ -429,7 +532,8 @@ class GameSession:
         s.choose_plan(key)
         rng = random.Random(self.seed+self.roll_index)
         self.roll_index += 1
-        s.incident_at = s.work_total*rng.uniform(.35,.65) if rng.random() < self.incident_chance else None
+        s.incident_at = (None if self.story else
+                         s.work_total*rng.uniform(.35,.65) if rng.random() < self.incident_chance else None)
         run.playthrough_id = self.db.create_playthrough(run.mission['id'],key)
         allocation = Allocation(run.playthrough_id, parts)
         self.servers.reserve(allocation)
@@ -823,6 +927,8 @@ class GameSession:
             self._feedback(run,'재처리 계획을 확인했습니다. 추가 준비 후 결과를 알려주세요.')
 
     def restart(self):
+        if self.story:
+            raise ValueError('현재 제공되는 스토리는 Chapter 1까지입니다. 다음 요청은 이후 미션에서 제공됩니다.')
         run = self.current
         if run.request['status'] not in ('completed','rejected') or (run.state.succeeded is False and not run.followup_closed):
             raise ValueError('이전 요청의 후속 조치를 마친 뒤 새 요청을 받아 주세요.')
@@ -876,6 +982,8 @@ class GameSession:
             self.db.mark_request_read(rid)
             self._refresh_request(self.runs[rid])
             self.selected_id = rid
+            if self.story and self.story.request_id == rid:
+                self.story.request_read = True
         return steps
 
     def recent_records(self):
