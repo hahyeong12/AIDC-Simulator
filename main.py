@@ -1,4 +1,4 @@
-"""AIDC Simulator v0.9-1a: 첫 출근부터 업무 완료와 모드 전환까지."""
+"""AIDC Simulator v0.9-1b-1: 첫 출근부터 업무 완료와 모드 전환까지."""
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -10,42 +10,61 @@ from allocation_dialog import AllocationDialog
 from server_widgets import gpu_module, reset_hardware
 from story import GUIDES, STEPS, Dialogue
 from chapter_dialog import ChapterCompleteDialog
+from story_dialog import StoryDialogueDialog, StoryReviewDialog
+from story_slots import StorySlots
 from ui import (BG, PANEL, BORDER, TEXT, MUTED, CYAN, GREEN, RED, AMBER, FONT,
                 ActionButton, RejectionDialog, MessageDialog,
                 TextDialog, label, request_status_of, status_of)
 
 
 class SimulatorApp:
-    def __init__(self, root, db=None, db_factory=Database, **session_options):
+    def __init__(self, root, db=None, db_factory=Database, story_slots=None, **session_options):
         self.root = root
         self.db_factory, self.closed, self.transitioning = db_factory, False, False
-        root.title('AIDC Simulator v0.9-1a | 울산 AI 데이터센터 관제실')
+        root.title('AIDC Simulator v0.9-1b-1 | 울산 AI 데이터센터 관제실')
         root.geometry(f'{min(1280, root.winfo_screenwidth()-40)}x{min(680, root.winfo_screenheight()-100)}')
         root.minsize(1000, 650)
         root.configure(bg=BG)
         self.db = db if db is not None else Database(STORY_DB_PATH if session_options.get('mode') == 'story' else DB_PATH)
+        self.story_slots = story_slots or StorySlots(self.db.path.parent if self.db.path else None)
+        before = set(root.winfo_children())
+        claimed = False
         try:
+            self.db.claim_game()
+            claimed = True
             self.session = GameSession(self.db, **session_options)
+            self.center = self.session.center
+            self.message_window = None
+            self.allocation_window = None
+            self.story_window = None
+            self.chapter_window = None
+            self.story_event_timer = None
+            self.story_destroy_binding = root.bind('<Destroy>', self.cancel_story_event, add='+')
+            self.setup_ui()
+            if self.session.story:
+                self.resources.book.select(self.resources.inspector_frame)
+            self.refresh()
+            self.network.start()
+            root.protocol('WM_DELETE_WINDOW', self.on_close)
+            if self.session.story:
+                if self.session.story.chapter_completed:
+                    self.show_chapter_complete()
+                else:
+                    self.show_story_event()
         except Exception:
+            if claimed:
+                self.closed = True
+                if hasattr(self, 'network'):
+                    self.network.stop()
+                if hasattr(self, 'story_destroy_binding'):
+                    self.cancel_story_event()
+                    root.unbind('<Destroy>', self.story_destroy_binding)
+                for widget in set(root.winfo_children()) - before:
+                    widget.destroy()
+                self.db.release_game()
             if db is None:
                 self.db.close()
             raise
-        self.center = self.session.center
-        self.message_window = None
-        self.allocation_window = None
-        self.story_window = None
-        self.chapter_window = None
-        self.setup_ui()
-        if self.session.story:
-            self.resources.book.select(self.resources.inspector_frame)
-        self.refresh()
-        self.network.start()
-        root.protocol('WM_DELETE_WINDOW', self.on_close)
-        if self.session.story:
-            if self.session.story.chapter_completed:
-                self.show_chapter_complete()
-            else:
-                self.show_story_help()
 
     @property
     def state(self):
@@ -74,7 +93,7 @@ class SimulatorApp:
         header.grid(row=0, sticky='ew')
         label(header, 'AIDC', 22, CYAN, True).pack(side='left')
         mode_label = '스토리 모드' if self.session.story else '자유 운영 모드'
-        label(header, f'ULSAN / v0.9-1a · {mode_label}', 10, bold=True).pack(side='left', padx=12)
+        label(header, f'ULSAN / v0.9-1b-1 · {mode_label}', 10, bold=True).pack(side='left', padx=12)
         self.notice_var = tk.StringVar()
         self.notice_button = ActionButton(header, 'AIDC LINK', self.open_latest_message)
         self.notice_button.pack(side='right')
@@ -176,6 +195,10 @@ class SimulatorApp:
             self.story_skip_button.grid(row=0, column=2)
             self.story_complete_button = ActionButton(self.story_bar, 'Chapter 1 완료', self.show_chapter_complete)
             self.resources.book.bind('<<NotebookTabChanged>>', self.on_story_preview, add='+')
+            self.resource_confirm_button = tk.Button(
+                self.resources.inspector_frame, text='GPU·전력 정보 확인', bg=PANEL, fg=CYAN,
+                font=(FONT, 9), command=self.confirm_story_resources, relief='flat')
+            self.resource_confirm_button.pack(fill='x', before=self.resources.owners)
 
     def make_list(self, parent, columns, names, widths, height):
         tree = ttk.Treeview(parent, columns=columns, show='headings', height=height, selectmode='browse')
@@ -194,6 +217,7 @@ class SimulatorApp:
             story = self.session.story
             self.story_objective.configure(text=f'Chapter {story.chapter} · 현재 목표: {story.objective}')
             self.story_skip_button.configure(state='disabled' if story.tutorial_completed else 'normal')
+            self.resource_confirm_button.configure(state='normal' if story.step == 'resources' else 'disabled')
             if story.chapter_completed:
                 self.story_skip_button.grid_remove()
                 self.story_complete_button.grid(row=0, column=2)
@@ -378,8 +402,8 @@ class SimulatorApp:
             current = self.session.story
             if current.chapter_completed and not previous[2]:
                 self.show_chapter_complete()
-            elif previous[1] != current.tutorial_completed or (previous[0] != current.step and current.step in ('time', 'operations')):
-                self.show_story_help()
+            else:
+                self.show_story_event()
         return True
 
     def select_server(self, key):
@@ -390,8 +414,41 @@ class SimulatorApp:
                 self.resources.select_server(previous)
                 self.network.selected = previous
                 self.network.redraw()
-            elif self.session.story.step == 'resources':
-                self.show_story_help()
+
+    def show_story_event(self):
+        """실제 세션 작업 뒤에만 호출합니다. refresh/타이머는 대화를 만들지 않습니다."""
+        story = self.session.story
+        if not story or story.chapter_completed or story.dialogue_event in story.dialogue_seen:
+            return None
+        # 고객 요청/계획을 읽는 중에는 해당 창을 닫은 뒤 사건 대화를 보여 줍니다.
+        for window in (self.message_window, self.allocation_window):
+            if window is not None and window.winfo_exists():
+                return None
+        return self.show_story_help()
+
+    def story_work_window_closed(self, event):
+        if self.closed or self.transitioning:
+            return
+        if event.widget is self.message_window:
+            self.message_window = None
+        elif event.widget is self.allocation_window:
+            self.allocation_window = None
+        else:
+            return
+        self.cancel_story_event()
+        self.story_event_timer = self.root.after_idle(self.resume_story_event)
+
+    def resume_story_event(self):
+        self.story_event_timer = None
+        if not self.closed and not self.transitioning:
+            self.show_story_event()
+
+    def cancel_story_event(self, event=None):
+        if event is not None and event.widget is not self.root:
+            return
+        if self.story_event_timer is not None:
+            self.root.after_cancel(self.story_event_timer)
+            self.story_event_timer = None
 
     def show_story_help(self):
         story = self.session.story
@@ -411,18 +468,17 @@ class SimulatorApp:
             info = (f'예상 완료: {game_time(self.session.minute+run.state.remaining_minutes)}\n'
                     + self.session.deadline_summary(run) + '\n\n서버별 잔여 자원\n' + remaining)
             pages.append(Dialogue('system', info).page())
-        self.story_window = MessageDialog(
-            self.root, '교육 담당자', '울산 AIDC 운영팀',
-            pages, animate=False,
-            message_kind=f'교육 안내 · Chapter {story.chapter}', confirm=confirm,
-            history_hint='현재 안내는 운영실 [교육 도움말]에서 다시 보기')
-        # 창 닫기/대화 페이지 건너뛰기는 스토리 단계 완료가 아닙니다.
-        self.story_window.skip_button.configure(text='마지막 안내')
+        self.story_window = StoryDialogueDialog(self.root, pages, confirm=confirm)
+        try:
+            self.session.mark_story_dialogue(story.dialogue_event)
+        except Exception as exc:
+            self.story_window.destroy()
+            messagebox.showerror('대화 저장 오류', str(exc), parent=self.root)
+            return None
         return self.story_window
 
     def confirm_story_step(self, action):
         if self._perform(action):
-            self.show_story_help()
             return True
         return False
 
@@ -435,11 +491,7 @@ class SimulatorApp:
             self._perform(lambda:self.session.inspect_story_preview(self.session.selected_id))
 
     def show_story_review(self):
-        pages = [line.page() for key in STEPS for line in GUIDES[key][1]]
-        window = MessageDialog(self.root, '교육 복습', '울산 AIDC 운영팀', pages, animate=False,
-                               message_kind='교육 내용 다시 보기', history_hint='복습은 업무 진행 상태를 바꾸지 않습니다.')
-        window.skip_button.configure(text='마지막 안내')
-        return window
+        return StoryReviewDialog(self.root)
 
     def show_story_status(self):
         story = self.session.story
@@ -471,22 +523,25 @@ class SimulatorApp:
             messagebox.showerror('저장 오류', f'현재 상태를 저장하지 못해 모드를 전환하지 않았습니다.\n{exc}', parent=self.root)
             return False
         self.closed = True
+        self.cancel_story_event()
+        self.root.unbind('<Destroy>', self.story_destroy_binding)
         self.network.stop()
         for widget in self.root.winfo_children():
             widget.destroy()
         self.root.rowconfigure(2, weight=0)
-        self.mode_selector = ModeSelection(self.root, db_factory=self.db_factory)
+        self.mode_selector = ModeSelection(self.root, db_factory=self.db_factory, story_slots=self.story_slots,
+                                           preferred_story=self.db.path if self.session.story else None)
         if mode is not None:
             self.mode_selector.start(mode)
         return True
 
     def confirm_story_resources(self):
-        if self.resources.selected != 'A':
+        if (self.resources.selected != 'A'
+                or self.resources.book.select() != str(self.resources.inspector_frame)):
             messagebox.showerror('교육 안내', 'Server A를 다시 선택하고 Inspector를 확인해 주세요.', parent=self.root)
             return False
         self.resources.book.select(self.resources.inspector_frame)
         if self._perform(self.session.confirm_story_resources):
-            self.show_story_help()
             return True
         return False
 
@@ -511,9 +566,13 @@ class SimulatorApp:
         self.allocation_window = AllocationDialog(
             self.root, self.session, self.plan_var.get(),
             lambda mode, parts: self._perform(lambda: self.session.choose_plan(mode, server_plan=parts)))
+        if self.session.story and self.story_window is not None and self.story_window.winfo_exists():
+            self.story_window.destroy()
         if self.session.story and not self._perform(lambda:self.session.inspect_story_preview(self.session.selected_id)):
             self.allocation_window.destroy()
             return None
+        if self.session.story:
+            self.allocation_window.bind('<Destroy>', self.story_work_window_closed, add='+')
         return self.allocation_window
     def open_migration_plans(self):
         if self.allocation_window is not None and self.allocation_window.winfo_exists():
@@ -584,6 +643,10 @@ class SimulatorApp:
         self.message_window = MessageDialog(self.root, run.mission['company_name'], run.mission['country'], steps,
                                             message_kind='새 메시지' if was_unread else '확인한 메시지 · 현재 상태',
                                             confirm=confirm)
+        if self.session.story:
+            if self.story_window is not None and self.story_window.winfo_exists():
+                self.story_window.destroy()
+            self.message_window.bind('<Destroy>', self.story_work_window_closed, add='+')
         return self.message_window
     def show_conversation_history(self):
         steps = self.session.conversation(self.session.selected_id, history=True)
@@ -634,55 +697,136 @@ class SimulatorApp:
 
 
 class ModeSelection:
-    """시작 시에만 표시합니다. SimulatorApp 직접 생성은 기존 자유 운영 방식입니다."""
-    def __init__(self, root, db_factory=Database):
+    """중앙 모드 메뉴와 독립 스토리 슬롯 선택. 메뉴에서는 DB를 열지 않습니다."""
+    def __init__(self, root, db_factory=Database, story_slots=None, preferred_story=None):
         self.root, self.db_factory, self.app = root, db_factory, None
+        self.story_slots = story_slots or StorySlots()
+        self.preferred_story = preferred_story
+        self.starting = False
         root.protocol('WM_DELETE_WINDOW', root.destroy)
-        root.title('AIDC Simulator v0.9-1a | 모드 선택')
-        root.geometry('1000x650')
+        root.title('AIDC Simulator v0.9-1b-1 | 모드 선택')
+        if root.winfo_width() <= 1:
+            root.geometry('1000x650')
         root.minsize(1000, 650)
         root.configure(bg=BG)
-        self.frame = tk.Frame(root, bg=BG, padx=70, pady=60)
+        self.frame = tk.Frame(root, bg=BG)
         self.frame.pack(fill='both', expand=True)
-        title = tk.Frame(self.frame, bg=BG)
+        self.content = tk.Frame(self.frame, bg=BG)
+        self.content.place(relx=.5, rely=.5, anchor='center', width=860)
+        self.frame.bind('<Configure>', self.layout_content)
+        title = tk.Frame(self.content, bg=BG)
         title.pack(anchor='w')
         icon = tk.Canvas(title, width=76, height=40, bg=BG, highlightthickness=0)
         icon.pack(side='left', padx=(0, 12))
         reset_hardware(icon)
         gpu_module(icon, 6, 6, 64, 27, 'available')
         label(title, 'AIDC Simulator', 30, CYAN, True).pack(side='left')
-        label(self.frame, '울산 AI 데이터센터 운영 시뮬레이션', 14, MUTED).pack(anchor='w', pady=(8, 35))
+        label(self.content, '울산 AI 데이터센터 운영 시뮬레이션', 14, MUTED).pack(anchor='w', pady=(8, 28))
+        self.menu_body = tk.Frame(self.content, bg=BG)
+        self.menu_body.pack(fill='x')
+        self.mode_panel = tk.Frame(self.menu_body, bg=BG)
+        self.mode_panel.pack(fill='x')
         self.buttons = {}
         for mode, title, text in (
             ('story', '스토리 모드', '신입 엔지니어로 첫 출근하여 데이터센터 운영을 배우고 단계별 미션에 도전합니다.'),
             ('free', '자유 운영 모드', '기존 데이터센터 운영 기록을 이어가거나 고객 요청을 자유롭게 처리합니다.')):
-            card = tk.Frame(self.frame, bg=PANEL, padx=22, pady=18)
+            card = tk.Frame(self.mode_panel, bg=PANEL, padx=22, pady=18)
             card.pack(fill='x', pady=(0, 18))
-            self.buttons[mode] = ActionButton(card, title, lambda m=mode:self.start(m))
+            command = self.show_story_menu if mode == 'story' else lambda:self.start('free')
+            self.buttons[mode] = ActionButton(card, title, command)
             self.buttons[mode].pack(anchor='w')
-            label(card, text, 11, MUTED, wraplength=760, justify='left').pack(anchor='w', pady=(10, 0))
-        label(self.frame, 'v0.9-1a · 현재 스토리는 Chapter 1까지 제공됩니다.', 10, MUTED).pack(anchor='w')
+            description = label(card, text, 11, MUTED, wraplength=760, justify='left')
+            description.pack(anchor='w', pady=(10, 0))
+            card.bind('<Configure>', lambda e, text=description:text.configure(wraplength=max(300, e.width-44)))
+        self.story_panel = tk.Frame(self.menu_body, bg=PANEL, padx=22, pady=18)
+        label(self.story_panel, '스토리 모드 · Chapter 1', 15, CYAN, True).pack(anchor='w', pady=(0, 10))
+        self.story_buttons = {}
+        self.story_buttons['new'] = ActionButton(self.story_panel, '새 스토리 시작', self.new_story)
+        self.story_buttons['new'].pack(fill='x')
+        label(self.story_panel, '첫 출근부터 시작합니다. 이전 기록은 별도 슬롯에 보존됩니다.',
+              10, MUTED).pack(anchor='w', pady=(7, 16))
+        label(self.story_panel, '이어갈 저장 기록', 10, MUTED).pack(anchor='w')
+        self.slot_choice = ttk.Combobox(self.story_panel, state='readonly', font=(FONT, 10))
+        self.slot_choice.pack(fill='x', pady=7)
+        self.story_buttons['continue'] = ActionButton(self.story_panel, '이어하기', self.continue_story)
+        self.story_buttons['continue'].pack(fill='x')
+        self.story_buttons['back'] = ActionButton(self.story_panel, '돌아가기', self.show_modes)
+        self.story_buttons['back'].pack(anchor='w', pady=(16, 0))
+        self.version_label = label(self.content, 'v0.9-1b-1 · 현재 스토리는 Chapter 1까지 제공됩니다.', 10, MUTED)
+        self.version_label.pack(anchor='w', pady=(14, 0))
 
-    def start(self, mode):
-        if self.app is not None:
+    def layout_content(self, event):
+        self.content.place_configure(width=min(860, max(600, event.width-80)))
+
+    def show_story_menu(self):
+        if self.starting or self.app is not None:
+            return
+        self.slot_paths = self.story_slots.available()
+        self.slot_choice.configure(values=[self.story_slots.title(p) for p in self.slot_paths])
+        if self.slot_paths:
+            preferred = self.preferred_story
+            index = self.slot_paths.index(preferred) if preferred in self.slot_paths else len(self.slot_paths)-1
+            self.slot_choice.current(index)
+        else:
+            self.slot_choice.set('저장된 스토리가 없습니다.')
+        self.story_buttons['continue'].configure(state='normal' if self.slot_paths else 'disabled')
+        self.mode_panel.pack_forget()
+        self.story_panel.pack(fill='x')
+
+    def show_modes(self):
+        if not self.starting:
+            self.story_panel.pack_forget()
+            self.mode_panel.pack(fill='x')
+
+    def new_story(self):
+        if self.app is not None or self.starting:
+            return self.app
+        try:
+            path = self.story_slots.reserve_new()
+        except Exception as exc:
+            messagebox.showerror('새 스토리 시작 오류', str(exc), parent=self.root)
+            return None
+        return self.start('story', path=path, fresh=True)
+
+    def continue_story(self):
+        index = self.slot_choice.current()
+        if index < 0 or index >= len(self.slot_paths):
+            return None
+        return self.start('story', path=self.slot_paths[index], resume=True)
+
+    def start(self, mode, path=None, fresh=False, resume=False):
+        # 직접 start('story')를 쓰는 기존 호출은 기존 스토리 파일을 이어갑니다.
+        if self.app is not None or self.starting:
             return self.app
         if mode not in ('free', 'story'):
             raise ValueError('존재하지 않는 게임 모드입니다.')
         db = None
+        self.starting = True
         before = set(self.root.winfo_children())
         try:
-            db = self.db_factory(STORY_DB_PATH if mode == 'story' else DB_PATH)
+            target = path if path is not None else self.story_slots.legacy_path if mode == 'story' else DB_PATH
+            if resume and not target.is_file():
+                raise ValueError('선택한 저장 파일을 찾을 수 없습니다. 새 스토리 시작을 이용해 주세요.')
+            db = self.db_factory(target)
+            if fresh and (db.get_simulation() or db.get_requests()):
+                raise ValueError('새 스토리에 기존 기록을 사용할 수 없습니다.')
+            if resume and not db.get_simulation():
+                raise ValueError('이 슬롯에는 이어갈 진행 기록이 없습니다. 새 스토리 시작을 이용해 주세요.')
             self.frame.pack_forget()
-            self.app = SimulatorApp(self.root, db=db, db_factory=self.db_factory, mode=mode)
+            self.app = SimulatorApp(self.root, db=db, db_factory=self.db_factory,
+                                    story_slots=self.story_slots, mode=mode)
         except Exception as exc:
-            if db is not None:
+            if db is not None and not db._game_claimed:
                 db.close()
             for widget in set(self.root.winfo_children()) - before:
                 widget.destroy()
             self.root.rowconfigure(2, weight=0)
             self.frame.pack(fill='both', expand=True)
+            self.root.protocol('WM_DELETE_WINDOW', self.root.destroy)
             messagebox.showerror('게임 시작 오류', str(exc), parent=self.root)
             return None
+        finally:
+            self.starting = False
         self.frame.destroy()
         return self.app
 

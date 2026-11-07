@@ -506,7 +506,11 @@ class ModeSelectionTests(unittest.TestCase):
             db = Database(':memory:'); self.databases.append(db)
             self.addCleanup(db.close)
             return db
-        self.selector = ModeSelection(self.root, db_factory=factory)
+        from story_slots import StorySlots
+        self.slots_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.slots_directory.cleanup)
+        self.selector = ModeSelection(self.root, db_factory=factory,
+                                      story_slots=StorySlots(self.slots_directory.name))
         self.root.update()
 
     def test_selection_screen_does_not_open_any_save(self):
@@ -527,8 +531,11 @@ class ModeSelectionTests(unittest.TestCase):
 
     def test_story_button_uses_story_file_and_story_session(self):
         self.selector.buttons['story'].invoke(); self.root.update()
+        self.assertEqual(self.paths, [])
+        self.assertTrue(self.selector.story_panel.winfo_ismapped())
+        self.selector.story_buttons['new'].invoke(); self.root.update()
         self.addCleanup(self.selector.app.network.stop)
-        self.assertEqual(self.paths, [STORY_DB_PATH])
+        self.assertEqual(self.paths, [Path(self.slots_directory.name)/'aidc_story_slot_001.db'])
         self.assertEqual(self.selector.app.session.mode, 'story')
         self.assertIsNotNone(self.selector.app.session.story)
 
@@ -548,6 +555,7 @@ class ModeSelectionTests(unittest.TestCase):
         self.selector.db_factory = lambda path:(_ for _ in ()).throw(OSError('저장 파일 열기 실패'))
         with patch('main.messagebox.showerror') as error:
             self.selector.buttons['story'].invoke(); self.root.update()
+            self.selector.story_buttons['new'].invoke(); self.root.update()
         error.assert_called_once()
         self.assertTrue(self.selector.frame.winfo_ismapped())
         self.assertIsNone(self.selector.app)

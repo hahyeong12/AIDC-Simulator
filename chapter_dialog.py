@@ -2,6 +2,7 @@
 import tkinter as tk
 
 from ui import BG, PANEL, CYAN, MUTED, TEXT, ActionButton, label
+from story_portraits import draw_portrait
 
 
 class ChapterCompleteDialog(tk.Toplevel):
@@ -17,6 +18,10 @@ class ChapterCompleteDialog(tk.Toplevel):
         self.congratulations = label(self, '첫 업무를 성공적으로 마쳤네요.\n처음에는 복잡해 보여도 조금씩 익숙해질 겁니다.',
                                      11, TEXT, justify='left')
         self.congratulations.grid(row=1, sticky='w', padx=22, pady=(0, 12))
+        self.mentor_portrait = tk.Canvas(self, width=72, height=99, bd=0)
+        self.mentor_portrait.grid(row=0, rowspan=2, sticky='ne', padx=22, pady=12)
+        draw_portrait(self.mentor_portrait, 'mentor')
+        self.mentor_portrait.scale('all', 0, 0, .6, .6)
         deadline = '기한 내 완료' if result['on_time'] is True else '기한 초과' if result['on_time'] is False else '기한 평가 제외'
         self.full_text = (f'첫 번째 고객 업무를 완료했습니다.\n'
                           f'고객: {result["company"]}\n작업: {result["task"]}\n'

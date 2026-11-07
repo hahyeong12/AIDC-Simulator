@@ -4,6 +4,7 @@ import json
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from save_lease import SaveLease
 
 DB_PATH = Path(__file__).with_name("aidc_game.db")
 STORY_DB_PATH = Path(__file__).with_name("aidc_story.db")
@@ -15,10 +16,26 @@ def now_text() -> str:
 
 class Database:
     def __init__(self, path: str | Path = DB_PATH):
+        self.path = None if str(path) == ':memory:' else Path(path).resolve()
+        self._game_claimed = False
+        self._game_lease = None
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.init_schema()
+
+    def claim_game(self):
+        if self._game_claimed:
+            raise ValueError('이 DB 연결은 이미 다른 게임에서 사용 중입니다.')
+        if self.path is not None:
+            self._game_lease = SaveLease(self.path)
+        self._game_claimed = True
+
+    def release_game(self):
+        if self._game_lease is not None:
+            self._game_lease.close()
+            self._game_lease = None
+        self._game_claimed = False
 
     @contextmanager
     def transaction(self):
@@ -334,3 +351,4 @@ class Database:
 
     def close(self) -> None:
         self.conn.close()
+        self.release_game()

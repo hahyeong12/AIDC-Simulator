@@ -243,6 +243,14 @@ class GameSession:
             self.story = story
             raise
 
+    def mark_story_dialogue(self, event):
+        """표시 사실만 저장합니다. 대화는 업무 확인/완료를 대신하지 않습니다."""
+        if not self.story or event != self.story.dialogue_event:
+            raise ValueError('현재 사건의 대화가 아닙니다.')
+        if event not in self.story.dialogue_seen:
+            with self._atomic():
+                self.story.dialogue_seen.append(event)
+
     def select_story_server(self, server_id):
         if not self.story or self.story.tutorial_completed:
             return

@@ -439,6 +439,7 @@ class PatchGuiTests(unittest.TestCase):
         self.assertIsNone(message.timer)
         self.assertNotIn(old_timer, self.root.tk.call('after', 'info'))
         self.app.mode_selector.buttons['story'].invoke(); self.root.update()
+        self.app.mode_selector.story_buttons['continue'].invoke(); self.root.update()
         resumed = self.app.mode_selector.app
         self.assertEqual(resumed.session.story.step, 'operations')
         self.assertEqual(resumed.center.gpu_used, 7)

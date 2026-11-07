@@ -8,3 +8,8 @@ aidc_game.db-*
 aidc_story.db
 aidc_story.db-journal
 aidc_story.db-*
+aidc_game.db.lock
+aidc_story.db.lock
+aidc_story_slot_*.db
+aidc_story_slot_*.db-*
+aidc_story_slot_*.db.lock
