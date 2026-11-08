@@ -18,3 +18,18 @@ def start_legacy_plan(owner, mode):
     session = getattr(owner, 'session', owner)
     session.current.conditions = {}
     return owner.choose_plan(mode)
+
+
+def dismiss_story_popups(app, root):
+    """안내/결과 창만 닫습니다. 실제 교육 확인이나 게임 행동을 대신하지 않습니다."""
+    for _ in range(4):
+        root.update()
+        feedback = getattr(app, 'feedback_window', None)
+        guide = app.story_window
+        if feedback is not None and feedback.winfo_exists():
+            feedback.close_button.invoke()
+        elif guide is not None and guide.winfo_exists():
+            guide.close_button.invoke()
+        else:
+            break
+    root.update()

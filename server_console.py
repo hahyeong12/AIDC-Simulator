@@ -101,6 +101,7 @@ class LiveServerRoom(tk.Canvas):
         self.selected, self.timer, self.phase = 'A', None, 0
         self.rack_bounds = {}
         self.extra_canvases = []
+        self.tutorial_color = None
         self.bind('<Configure>', lambda _: self.redraw())
         self.bind('<Destroy>', lambda e: self.stop() if e.widget == self else None)
         for key, step in (('<Left>',-1),('<Right>',1),('<Up>',-2),('<Down>',2)):
@@ -120,7 +121,7 @@ class LiveServerRoom(tk.Canvas):
             return
         self.columns = 4 if w >= 620 else 2
         rows = 1 if self.columns == 4 else 2
-        ink(self, 12, 9, 'ULSAN / SERVER FLOOR', 10, TEXT, True)
+        ink(self, 12, 9, 'ULSAN / SERVER FLOOR', 10, TEXT, True, tags='room-heading')
         rw = (w-28-10*(self.columns-1))/self.columns
         rh = (h-40-10*(rows-1))/rows
         self.rack_bounds.clear()
@@ -167,6 +168,25 @@ class LiveServerRoom(tk.Canvas):
                 ink(self,x+12,y+rh-12,names,9,CYAN if v['owners'] else MUTED,anchor='w',tags=tags+('owner-label',))
             self.tag_bind(tag,'<Button-1>',lambda _, key=spec.key:self.select(key))
         animate_hardware(self,self.phase)
+        self.draw_tutorial_highlight()
+
+    def set_tutorial_highlight(self, color):
+        self.tutorial_color = color
+        self.draw_tutorial_highlight()
+
+    def draw_tutorial_highlight(self):
+        self.delete('tutorial-highlight', 'tutorial-glow', 'tutorial-caption')
+        self.coords('room-heading', self.winfo_width()-12 if self.tutorial_color else 12, 9)
+        self.itemconfigure('room-heading', anchor='ne' if self.tutorial_color else 'nw')
+        if self.tutorial_color and 'A' in self.rack_bounds:
+            x, y, right, bottom = self.rack_bounds['A']
+            self.create_rectangle(x-4, y-4, right+4, bottom+4,
+                                  outline=self.tutorial_color, width=4,
+                                  tags=('tutorial-highlight', 'server-A'))
+            self.create_rectangle(x-7, y-7, right+7, bottom+7, outline='#aa7d31', width=1,
+                                  tags=('tutorial-glow', 'server-A'))
+            self.create_text((x+right)/2, y-5, anchor='s', text='▼ 여기를 클릭',
+                             fill=self.tutorial_color, font=(FONT, 9, 'bold'), tags=('tutorial-caption', 'server-A'))
 
     def start(self):
         if self.timer is None:
@@ -244,6 +264,9 @@ class ServerPanel(tk.Frame):
         self.compare_button=tk.Button(review,text='배정 계획 비교·선택',bg=SURFACE,fg=CYAN,
                                       activebackground=EDGE,activeforeground=TEXT,font=(FONT,9),relief='flat',pady=5)
         self.compare_button.pack(fill='x',pady=(0,5))
+        self.tutorial_tab_edges = []
+        self.tutorial_tab_color = None
+        self.book.bind('<Configure>', lambda _: self.set_tutorial_highlight(self.tutorial_tab_color), add='+')
         self.plan_text=tk.Text(review,bg='#0b1522',fg=TEXT,font=(FONT,9),height=5,width=1,wrap='word',bd=0)
         self.plan_text.pack(fill='both',expand=True)
         self.refresh()
@@ -251,6 +274,34 @@ class ServerPanel(tk.Frame):
 
     def select_server(self,key):
         self.selected=key; self.refresh(); self.book.select(self.inspector_frame)
+
+    def set_tutorial_highlight(self, color):
+        """탭의 바깥쪽만 표시하여 선택/배정 동작과 레이아웃을 유지합니다."""
+        self.tutorial_tab_color = color
+        for edge in self.tutorial_tab_edges:
+            edge.destroy()
+        self.tutorial_tab_edges.clear()
+        if color is None:
+            return
+        def on_preview_tab(x, y):
+            try:
+                return self.book.index(f'@{x},{y}') == 1
+            except tk.TclError:
+                return False
+        xs = [x for x in range(self.book.winfo_width()) if on_preview_tab(x, 10)]
+        if not xs:
+            return
+        left, right = min(xs), max(xs)
+        ys = [y for y in range(40) if on_preview_tab((left+right)//2, y)]
+        if not ys:
+            return
+        top, bottom = min(ys), max(ys)
+        for x, y, w, h in ((left, top, right-left+1, 2), (left, bottom-1, right-left+1, 2),
+                            (left, top, 2, bottom-top+1), (right-1, top, 2, bottom-top+1)):
+            edge = tk.Frame(self.book, bg=color, bd=0)
+            edge.place(x=x, y=y, width=w, height=h)
+            edge.bind('<Button-1>', lambda _: self.show_preview())
+            self.tutorial_tab_edges.append(edge)
 
     def show_preview(self):
         self.book.select(self.review_frame)

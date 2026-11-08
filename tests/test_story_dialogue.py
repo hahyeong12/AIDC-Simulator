@@ -13,6 +13,7 @@ from story import GUIDES, STEPS, StoryProgress
 from story_dialog import StoryDialogueDialog
 from tests.test_story import gameplay
 from tests.test_story_patch import prepare, finish
+from tests.support import dismiss_story_popups
 
 
 class DialogueStateTests(unittest.TestCase):
@@ -129,7 +130,7 @@ class DialogueGuiTests(unittest.TestCase):
         self.arrival(); self.app.select_server('A'); self.root.update()
 
     def request(self):
-        self.resources(); self.app.story_window.close_button.invoke()
+        self.resources(); dismiss_story_popups(self.app, self.root)
         self.app.resource_confirm_button.invoke(); self.root.update()
 
     def test_two_original_portraits_and_active_speaker_change(self):
@@ -153,7 +154,7 @@ class DialogueGuiTests(unittest.TestCase):
         self.assertEqual(renderer.call_args_list[1].args[1:], ('mentor', True))
 
     def test_close_and_last_page_do_not_select_server(self):
-        self.arrival(); d = self.app.story_window
+        self.arrival(); d = self.app.show_story_help()
         d.skip_button.invoke(); d.next_button.invoke()
         self.assertFalse(d.winfo_exists())
         self.assertEqual(self.app.session.story.step, 'server')
@@ -165,7 +166,7 @@ class DialogueGuiTests(unittest.TestCase):
 
     def test_inspector_confirmation_is_real_and_not_dialogue_next(self):
         self.resources()
-        self.app.story_window.close_button.invoke()
+        dismiss_story_popups(self.app, self.root)
         self.assertFalse(self.app.session.story.resources_confirmed)
         self.app.resource_confirm_button.invoke()
         self.assertTrue(self.app.session.story.resources_confirmed)
@@ -197,7 +198,7 @@ class DialogueGuiTests(unittest.TestCase):
         self.assertFalse(self.app.story_window.winfo_exists())
         self.assertNotIn('preview', self.app.session.story.dialogue_seen)
         self.app.message_window.destroy(); self.root.update()
-        self.assertEqual(self.app.story_window.steps, [v.page() for v in GUIDES['preview'][1]])
+        self.assertEqual(self.app.feedback_window.event, 'request')
         self.assertIn('preview', self.app.session.story.dialogue_seen)
         self.assertEqual(self.app.center.gpu_used, 0)
 
@@ -222,6 +223,7 @@ class DialogueGuiTests(unittest.TestCase):
         self.app.advance_time(10)
         self.assertIn('operations', self.app.session.story.dialogue_seen)
         self.assertGreater(self.app.state.work_done, 0)
+        self.app.show_story_help()
         self.app.story_window.skip_button.invoke(); self.app.story_window.next_button.invoke()
         self.app.advance_time(60); self.app.advance_time(60); self.root.update()
         self.assertTrue(self.app.session.story.chapter_completed)
@@ -260,13 +262,14 @@ class DialogueGuiTests(unittest.TestCase):
 
     def test_display_failure_destroys_dialog_and_leaves_event_retryable(self):
         self.app.session.confirm_story_arrival()
+        self.app.story_window.destroy()
         with patch.object(self.db, 'save_runtime', side_effect=OSError('실패')):
             with patch('main.messagebox.showerror') as error:
-                self.assertIsNone(self.app.show_story_event())
+                self.assertIsNone(self.app.show_story_help())
         error.assert_called_once()
         self.assertNotIn('server', self.app.session.story.dialogue_seen)
         self.assertFalse(self.app.story_window.winfo_exists())
-        self.assertTrue(self.app.show_story_event().winfo_exists())
+        self.assertTrue(self.app.show_story_help().winfo_exists())
 
     def test_free_mode_has_no_story_dialog_or_portraits(self):
         root = tk.Toplevel(self.root); db = Database(':memory:'); self.addCleanup(db.close)

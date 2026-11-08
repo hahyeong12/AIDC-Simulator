@@ -26,7 +26,7 @@ GUIDES = {
         Dialogue('mentor', '하나씩 함께 해 보면 됩니다. [첫 업무 시작]을 누르고 서버실부터 둘러볼까요?')]),
     'server': ('Server A를 클릭하여 장비 정보를 확인하세요.', [
         Dialogue('mentor', '먼저 중앙 서버실에서 Server A를 선택해 보세요. 오른쪽 서버 Inspector에서 장비 정보를 확인할 수 있습니다.')]),
-    'resources': ('Inspector에서 GPU·전력을 모두 확인한 뒤 교육 안내에서 확인하세요.', [
+    'resources': ('Inspector의 [GPU·전력 정보 확인]을 눌러 두 자원을 확인하세요.', [
         Dialogue('mentor', 'Server A의 장비 정보가 오른쪽 Inspector에 표시되었습니다. GPU는 AI 연산을 수행하는 장비이고, 전력은 서버 운영에 필요한 공급 용량입니다.'),
         Dialogue('mentor', 'GPU는 개별 반도체 모듈로, 전력은 가용량 게이지로 표시합니다. GPU가 남아 있어도 전력이 부족하면 작업을 시작할 수 없으니 둘 다 확인해야 합니다.'),
         Dialogue('system', 'Server A: GPU 4개 · 전력 4단위. Inspector에서 두 자원을 확인한 뒤 [자원 정보 확인]을 눌러 주세요.')]),

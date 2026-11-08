@@ -4,6 +4,7 @@ from tkinter import ttk
 
 from story import GUIDES, STEPS, SPEAKERS
 from story_portraits import draw_portrait
+from window_placement import center_dialog
 from ui import BG, MUTED, CYAN, MessageDialog, label, ActionButton
 
 
@@ -39,6 +40,7 @@ class StoryDialogueDialog(MessageDialog):
         self.close_button = ActionButton(self.next_button.master, '업무로 돌아가기', self.destroy)
         self.close_button.pack(side='right', padx=6)
         self.render()
+        center_dialog(self, parent)
 
     def render(self):
         super().render()
@@ -63,6 +65,7 @@ class StoryReviewDialog(StoryDialogueDialog):
         self.scene.current(0)
         self.scene.bind('<<ComboboxSelected>>', self.select_scene)
         self.page.configure(text='장면을 선택해 복습하세요. 업무 진행은 바뀌지 않습니다.')
+        center_dialog(self, parent)
 
     def select_scene(self, _=None):
         key = self.scene_keys[self.scene.current()]

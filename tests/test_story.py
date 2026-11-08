@@ -10,6 +10,7 @@ from database import Database, DB_PATH, STORY_DB_PATH
 from main import ModeSelection, SimulatorApp
 from session import GameSession
 from story import STEPS
+from tests.support import dismiss_story_popups
 
 
 def gameplay(s):
@@ -354,10 +355,10 @@ class StoryGuiTests(unittest.TestCase):
 
     def prepare(self):
         self.select_a()
-        win = self.app.story_window
-        win.skip_button.invoke(); win.next_button.invoke()
+        dismiss_story_popups(self.app, self.root)
+        self.app.resource_confirm_button.invoke()
         self.root.update()
-        self.app.story_window.destroy()
+        dismiss_story_popups(self.app, self.root)
         self.app.arrival_open_button.invoke(); self.root.update()
         self.app.message_window.destroy()
         self.app.resources.show_preview(); self.root.update()
@@ -380,7 +381,9 @@ class StoryGuiTests(unittest.TestCase):
         self.assertEqual(a.resources.selected, 'A')
         self.assertEqual(a.resources.book.select(), str(a.resources.inspector_frame))
         self.assertEqual(a.session.story.step, 'resources')
-        a.story_window.skip_button.invoke(); a.story_window.next_button.invoke(); self.root.update()
+        dismiss_story_popups(a, self.root)
+        a.resource_confirm_button.invoke(); dismiss_story_popups(a, self.root)
+        a.show_story_help(); self.root.update()
         self.assertEqual(a.session.story.step, 'request')
         self.assertIn('AIDC LINK', a.story_window.full_text)
 
@@ -405,6 +408,7 @@ class StoryGuiTests(unittest.TestCase):
         self.assertFalse(a.session.story.tutorial_completed)
         self.assertEqual(a.session.story.step, 'operations')
         self.assertEqual(a.center.gpu_used, 7)
+        a.show_story_help()
         self.assertIn('예상 완료', a.story_window.full_text)
         self.assertEqual(self.errors, [])
 

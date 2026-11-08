@@ -309,7 +309,7 @@ class PatchGuiTests(unittest.TestCase):
     def test_operations_help_shows_live_estimate_deadline_and_server_residuals(self):
         prepare(self.app.session); self.app.session.choose_plan('performance')
         self.app.advance_time(10)
-        win = self.app.story_window
+        win = self.app.show_story_help()
         win.skip_button.invoke()
         text = win.full_text
         self.assertIn('예상 완료:', text)

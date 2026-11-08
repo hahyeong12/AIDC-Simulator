@@ -86,7 +86,7 @@ class TextDialog(tk.Toplevel):
 class MessageDialog(tk.Toplevel):
     """타이핑 완성과 페이지 이동을 다음 버튼 하나로 처리하는 업무 메신저."""
     def __init__(self, parent, company, country, steps, animate=True, message_kind='업무 메시지', confirm=None,
-                 history_hint='과거 내용은 운영실 [대화 기록]'):
+                 history_hint='과거 내용은 운영실 [대화 기록]', summary=None):
         super().__init__(parent, bg=BG)
         self.title(f'AIDC LINK | {company} · {country}')
         self.geometry('760x470')
@@ -117,6 +117,31 @@ class MessageDialog(tk.Toplevel):
         self.skip_button.pack(side='right')
         self.bind('<Destroy>', self._cancel, add='+')
         self.render()
+        if summary is not None:
+            self.add_request_summary(parent, summary)
+
+    def add_request_summary(self, parent, summary):
+        from window_placement import center_dialog
+        self.summary_values = dict(summary)
+        # 기존 페이지/읽기 커서/동의 버튼은 그대로 두고 상단에 조건을 추가합니다.
+        for row in (4, 3, 2, 1):
+            for widget in self.grid_slaves(row=row):
+                widget.grid_configure(row=row+1)
+        self.rowconfigure(2, weight=0)
+        self.rowconfigure(3, weight=1)
+        self.summary_frame = tk.Frame(self, bg=PANEL, padx=10, pady=6,
+                                      highlightthickness=1, highlightbackground=BORDER)
+        self.summary_frame.grid(row=1, sticky='ew', padx=16, pady=(0, 6))
+        self.summary_frame.columnconfigure((1, 3), weight=1)
+        label(self.summary_frame, '원래 요청 조건', 10, CYAN, True).grid(row=0, columnspan=4, sticky='w', pady=(0, 3))
+        for i, (name, value) in enumerate(list(summary.items())[:8]):
+            col, row = (i % 2)*2, i//2+1
+            label(self.summary_frame, name, 9, MUTED).grid(row=row, column=col, sticky='nw', padx=(0, 7))
+            label(self.summary_frame, value, 9, TEXT, justify='left', wraplength=270).grid(row=row, column=col+1, sticky='nw', padx=(0, 10))
+        for row, (name, value) in enumerate(list(summary.items())[8:], 5):
+            label(self.summary_frame, name+'  '+value, 9, CYAN if name.startswith('동의한') else TEXT,
+                  justify='left', wraplength=790).grid(row=row, columnspan=4, sticky='w', pady=1)
+        center_dialog(self, parent, size=(880, 610), minimum=(740, 540))
     def _cancel(self, event=None):
         if event is not None and event.widget is not self:
             return

@@ -13,3 +13,10 @@ aidc_story.db.lock
 aidc_story_slot_*.db
 aidc_story_slot_*.db-*
 aidc_story_slot_*.db.lock
+
+# 재생성 가능한 UX 검증 캡처. README에서 사용하는 대표 이미지 네 개만 보관합니다.
+artifacts/v0.9-1d/*.png
+!artifacts/v0.9-1d/05_request_action.png
+!artifacts/v0.9-1d/06_customer_conditions.png
+!artifacts/v0.9-1d/08_plan_alternative.png
+!artifacts/v0.9-1d/10_time_feedback.png

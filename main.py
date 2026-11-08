@@ -1,4 +1,4 @@
-"""AIDC Simulator v0.9-1b-1: 첫 출근부터 업무 완료와 모드 전환까지."""
+"""AIDC Simulator v0.9-1d: 첫 출근부터 업무 완료와 모드 전환까지."""
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -12,6 +12,9 @@ from story import GUIDES, STEPS, Dialogue
 from chapter_dialog import ChapterCompleteDialog
 from story_dialog import StoryDialogueDialog, StoryReviewDialog
 from story_slots import StorySlots
+from tutorial_highlight import TutorialHighlight
+from story_feedback import StoryFeedbackDialog, FEEDBACK
+from request_summary import request_summary
 from ui import (BG, PANEL, BORDER, TEXT, MUTED, CYAN, GREEN, RED, AMBER, FONT,
                 ActionButton, RejectionDialog, MessageDialog,
                 TextDialog, label, request_status_of, status_of)
@@ -21,7 +24,7 @@ class SimulatorApp:
     def __init__(self, root, db=None, db_factory=Database, story_slots=None, **session_options):
         self.root = root
         self.db_factory, self.closed, self.transitioning = db_factory, False, False
-        root.title('AIDC Simulator v0.9-1b-1 | 울산 AI 데이터센터 관제실')
+        root.title('AIDC Simulator v0.9-1d | 울산 AI 데이터센터 관제실')
         root.geometry(f'{min(1280, root.winfo_screenwidth()-40)}x{min(680, root.winfo_screenheight()-100)}')
         root.minsize(1000, 650)
         root.configure(bg=BG)
@@ -39,6 +42,12 @@ class SimulatorApp:
             self.story_window = None
             self.chapter_window = None
             self.story_event_timer = None
+            self.story_reviews = set()
+            self.feedback_window = None
+            self.pending_feedback = None
+            self.feedback_events = set()
+            self.story_ui_busy = False
+            self.tutorial_highlight = TutorialHighlight(root)
             self.story_destroy_binding = root.bind('<Destroy>', self.cancel_story_event, add='+')
             self.setup_ui()
             if self.session.story:
@@ -56,6 +65,8 @@ class SimulatorApp:
                 self.closed = True
                 if hasattr(self, 'network'):
                     self.network.stop()
+                if hasattr(self, 'tutorial_highlight'):
+                    self.tutorial_highlight.stop()
                 if hasattr(self, 'story_destroy_binding'):
                     self.cancel_story_event()
                     root.unbind('<Destroy>', self.story_destroy_binding)
@@ -93,7 +104,7 @@ class SimulatorApp:
         header.grid(row=0, sticky='ew')
         label(header, 'AIDC', 22, CYAN, True).pack(side='left')
         mode_label = '스토리 모드' if self.session.story else '자유 운영 모드'
-        label(header, f'ULSAN / v0.9-1b-1 · {mode_label}', 10, bold=True).pack(side='left', padx=12)
+        label(header, f'ULSAN / v0.9-1d · {mode_label}', 10, bold=True).pack(side='left', padx=12)
         self.notice_var = tk.StringVar()
         self.notice_button = ActionButton(header, 'AIDC LINK', self.open_latest_message)
         self.notice_button.pack(side='right')
@@ -198,7 +209,7 @@ class SimulatorApp:
             self.resource_confirm_button = tk.Button(
                 self.resources.inspector_frame, text='GPU·전력 정보 확인', bg=PANEL, fg=CYAN,
                 font=(FONT, 9), command=self.confirm_story_resources, relief='flat')
-            self.resource_confirm_button.pack(fill='x', before=self.resources.owners)
+            self.resource_confirm_button.pack(fill='x', before=self.resources.fault_button.master)
 
     def make_list(self, parent, columns, names, widths, height):
         tree = ttk.Treeview(parent, columns=columns, show='headings', height=height, selectmode='browse')
@@ -215,7 +226,7 @@ class SimulatorApp:
         self.preview_plan()
         if self.session.story:
             story = self.session.story
-            self.story_objective.configure(text=f'Chapter {story.chapter} · 현재 목표: {story.objective}')
+            self.story_objective.configure(text=f'Chapter {story.chapter} · ACTION · 현재 목표: {story.objective}')
             self.story_skip_button.configure(state='disabled' if story.tutorial_completed else 'normal')
             self.resource_confirm_button.configure(state='normal' if story.step == 'resources' else 'disabled')
             if story.chapter_completed:
@@ -223,8 +234,102 @@ class SimulatorApp:
                 self.story_complete_button.grid(row=0, column=2)
             else:
                 self.story_complete_button.grid_remove()
-            self.network.configure(highlightbackground=CYAN if story.step == 'server' else BORDER)
-            self.time_buttons[10].configure(bg=BORDER if story.step == 'time' else PANEL)
+        self.update_tutorial_highlight()
+
+    def update_tutorial_highlight(self):
+        """현재 사실에서 대상을 재계산합니다. 대화/복습을 읽는 동안 관제실은 점멸하지 않습니다."""
+        highlight = self.tutorial_highlight
+        story = self.session.story
+        if (story and not self.closed and not self.transitioning
+                and self.story_objective.winfo_exists()):
+            self.story_objective.configure(text=f'Chapter {story.chapter} · {self.story_phase} · 현재 목표: {story.objective}')
+        if (self.closed or self.transitioning or not story or story.tutorial_completed
+                or story.chapter_completed or story.mission_status == 'closed'
+                or any(w is not None and w.winfo_exists()
+                       for w in (self.story_window, self.feedback_window, self.message_window, *self.story_reviews))):
+            highlight.clear()
+            return
+        step, widget = story.step, None
+        plan_window = self.allocation_window
+        if plan_window is not None and plan_window.winfo_exists():
+            if (step == 'allocation' and not plan_window.migration
+                    and plan_window.start_button.cget('state') != 'disabled'):
+                widget = plan_window.start_button
+        elif step == 'server':
+            widget = self.network
+        elif step == 'resources':
+            widget = (self.resource_confirm_button if self.resources.book.select() == str(self.resources.inspector_frame)
+                      else self.resources)
+        elif step == 'request':
+            widget = self.arrival_open_button if self.arrival_request_id == story.request_id else self.notice_button
+        elif step == 'preview':
+            widget = self.resources
+        elif step == 'allocation':
+            allowed = self.session.allocation_preview(self.session.current, self.plan_var.get())['allowed']
+            widget = self.action_buttons.get('start') if allowed else self.mode_buttons['performance']
+        elif step in ('time', 'work_complete'):
+            widget = self.time_buttons[10]
+        elif step == 'operations':
+            widget = self.action_buttons.get('operations')
+        highlight.show(step, widget)
+
+    def tutorial_window_closed(self, event):
+        if event.widget is self.story_window:
+            pass  # 기존 호출부가 닫힌 대화창의 존재 여부도 조회할 수 있도록 참조를 유지합니다.
+        elif event.widget in self.story_reviews:
+            self.story_reviews.discard(event.widget)
+        else:
+            return
+        self.update_tutorial_highlight()
+
+    @property
+    def story_phase(self):
+        if self.feedback_window is not None and self.feedback_window.winfo_exists():
+            return 'FEEDBACK'
+        if any(w is not None and w.winfo_exists() for w in (self.story_window, self.chapter_window)):
+            return 'STORY'
+        return 'ACTION' if self.session.story else None
+
+    def story_anchor(self, step):
+        widget = {'server': self.network, 'resources': getattr(self, 'resource_confirm_button', self.resources),
+                  'request': self.arrival_open_button, 'preview': self.resources,
+                  'allocation': self.action_frame, 'time': self.time_buttons[10],
+                  'operations': self.action_frame}.get(step, self.controls)
+        if step == 'server' and 'A' in self.network.rack_bounds:
+            x, y, right, bottom = self.network.rack_bounds['A']
+            return self.network.winfo_rootx()+int(x), self.network.winfo_rooty()+int(y), int(right-x), int(bottom-y)
+        return widget.winfo_rootx(), widget.winfo_rooty(), widget.winfo_width(), widget.winfo_height()
+
+    def queue_story_feedback(self, previous, anchor):
+        story = self.session.story
+        if (not story or previous not in FEEDBACK or story.skipped or story.chapter_completed
+                or story.mission_status == 'closed' or previous not in story.completed_steps):
+            return
+        # 완료 단계는 단조 증가합니다. 실행 중 실제 전환에서만 생성하므로 재실행 시 성공을 재생하지 않습니다.
+        token = (previous, story.step)
+        if token not in self.feedback_events:
+            self.pending_feedback = (token, previous, anchor)
+
+    def build_popup(self, factory, *args, **kwargs):
+        # 중앙/인접 배치의 update_idletasks 중 종료 예약이 재진입하지 않게 합니다.
+        previous = self.story_ui_busy
+        before = set(self.root.winfo_children())
+        self.story_ui_busy = True
+        try:
+            return factory(*args, **kwargs)
+        except Exception:
+            for widget in set(self.root.winfo_children())-before:
+                if isinstance(widget, tk.Toplevel):
+                    widget.destroy()
+            raise
+        finally:
+            self.story_ui_busy = previous
+
+    def feedback_closed(self, event):
+        if event.widget is not self.feedback_window or self.closed or self.transitioning:
+            return
+        self.cancel_story_event()
+        self.story_event_timer = self.root.after_idle(self.resume_story_event)
 
     def update_status(self):
         active = [r for r in self.session.runs.values() if r.state.phase in ('running','incident','paused','recovering')]
@@ -282,8 +387,15 @@ class SimulatorApp:
                                        f'{pending}/{MAX_PENDING_REQUESTS}'+(' 보류' if limit_note else ''))
         if self.session.story:
             self.arrival_schedule.configure(text='Chapter 1 · 미션에 따라 요청 접수')
+            story = self.session.story
+            if story.step == 'request' and not story.request_read and not story.tutorial_completed:
+                target = self.session.runs[story.request_id]
+                self.arrival_request_id = story.request_id
+                self.arrival_notice.configure(text=f'{target.mission["company_name"]} · 고객 조건 확인\n요청 모드·자원·완료 기한을 읽어 주세요.', fg=CYAN)
+                self.arrival_open_button.configure(state='normal')
             if not incoming:
-                self.arrival_notice.configure(text='Chapter 1 · 첫 고객 업무', fg=MUTED)
+                if self.arrival_request_id is None:
+                    self.arrival_notice.configure(text='Chapter 1 · 첫 고객 업무', fg=MUTED)
         faults = [r for r in active if r.state.phase in ('incident','paused')]
         self.alert.configure(text='! ' + ' · '.join(r.mission['country'] for r in faults)+' 장애 / 중단 · 대응을 선택하세요' if faults else '정상 작업은 시간 진행 버튼으로 함께 처리됩니다.')
         hardware = [key for key,value in self.session.servers.hardware.items() if value.state != 'HEALTHY']
@@ -312,6 +424,7 @@ class SimulatorApp:
             if key in self.action_buttons:
                 allowed = fits and self.session.allocation_preview(self.session.current, self.plan_var.get())['allowed'] and (key != 'retry' or self.state.retry_count < 2)
                 self.action_buttons[key].configure(state='normal' if allowed else 'disabled')
+        self.update_tutorial_highlight()
 
     def render_actions(self):
         for widget in self.action_frame.winfo_children():
@@ -374,6 +487,8 @@ class SimulatorApp:
             options = [('restart','같은 고객의 새 요청',self.new_mission)]
         if self.session.story:
             options = [option for option in options if option[0] != 'restart']
+            if self.session.story.step == 'operations' and not self.session.story.tutorial_completed:
+                options.append(('operations', '운영 상태 확인', self.show_story_help))
         if not self.session.can_notify_delay(self.session.current):
             options = [option for option in options if option[0] != 'delay']
         if self.session.hardware_servers(self.session.current) and not self.session.current.migration_left:
@@ -392,6 +507,7 @@ class SimulatorApp:
     def _perform(self, action):
         story = self.session.story
         previous = (story.step, story.tutorial_completed, story.chapter_completed) if story else None
+        anchor = self.story_anchor(story.step) if story else None
         try:
             action()
         except Exception as exc:
@@ -400,6 +516,10 @@ class SimulatorApp:
         self.refresh()
         if story:
             current = self.session.story
+            if current.step != previous[0]:
+                if self.story_window is not None and self.story_window.winfo_exists():
+                    self.story_window.destroy()
+                self.queue_story_feedback(previous[0], anchor)
             if current.chapter_completed and not previous[2]:
                 self.show_chapter_complete()
             else:
@@ -418,13 +538,48 @@ class SimulatorApp:
     def show_story_event(self):
         """실제 세션 작업 뒤에만 호출합니다. refresh/타이머는 대화를 만들지 않습니다."""
         story = self.session.story
-        if not story or story.chapter_completed or story.dialogue_event in story.dialogue_seen:
+        if not story or self.closed or self.transitioning or self.story_ui_busy or story.chapter_completed:
             return None
         # 고객 요청/계획을 읽는 중에는 해당 창을 닫은 뒤 사건 대화를 보여 줍니다.
         for window in (self.message_window, self.allocation_window):
             if window is not None and window.winfo_exists():
                 return None
-        return self.show_story_help()
+        if self.story_window is not None and self.story_window.winfo_exists():
+            return self.story_window
+        if self.pending_feedback is not None:
+            token, completed, anchor = self.pending_feedback
+            self.pending_feedback = None
+            if self.feedback_window is not None and self.feedback_window.winfo_exists():
+                self.feedback_window.destroy()
+            self.tutorial_highlight.clear()
+            try:
+                self.feedback_window = self.build_popup(StoryFeedbackDialog, self.root, completed, story.objective, anchor,
+                                                        avoid=(self.story_anchor(story.step),))
+            except Exception as exc:
+                self.pending_feedback = (token, completed, anchor)
+                messagebox.showerror('피드백 표시 오류', str(exc), parent=self.root)
+                self.update_tutorial_highlight()
+                return None
+            try:
+                if story.step != 'request':
+                    self.session.mark_story_dialogue(story.dialogue_event)
+            except Exception as exc:
+                self.feedback_window.destroy()
+                self.pending_feedback = (token, completed, anchor)
+                messagebox.showerror('피드백 저장 오류', str(exc), parent=self.root)
+                self.update_tutorial_highlight()
+                return None
+            self.feedback_events.add(token)
+            self.feedback_window.bind('<Destroy>', self.feedback_closed, add='+')
+            self.update_tutorial_highlight()
+            return self.feedback_window
+        if self.feedback_window is not None and self.feedback_window.winfo_exists():
+            return self.feedback_window
+        if (story.dialogue_event in ('arrival', 'request', 'closed', 'skipped')
+                and story.dialogue_event not in story.dialogue_seen):
+            return self.show_story_help()
+        self.update_tutorial_highlight()
+        return None
 
     def story_work_window_closed(self, event):
         if self.closed or self.transitioning:
@@ -442,10 +597,13 @@ class SimulatorApp:
         self.story_event_timer = None
         if not self.closed and not self.transitioning:
             self.show_story_event()
+            self.update_tutorial_highlight()
 
     def cancel_story_event(self, event=None):
         if event is not None and event.widget is not self.root:
             return
+        if event is not None:
+            self.tutorial_highlight.stop()
         if self.story_event_timer is not None:
             self.root.after_cancel(self.story_event_timer)
             self.story_event_timer = None
@@ -454,8 +612,11 @@ class SimulatorApp:
         story = self.session.story
         if not story:
             return None
+        if self.feedback_window is not None and self.feedback_window.winfo_exists():
+            self.feedback_window.destroy()
         if self.story_window is not None and self.story_window.winfo_exists():
             self.story_window.destroy()
+        self.tutorial_highlight.clear()
         confirms = {'arrival':('첫 업무 시작', lambda:self.confirm_story_step(self.session.confirm_story_arrival)),
                     'resources':('자원 정보 확인', self.confirm_story_resources),
                     'operations':('운영 상태 확인', lambda:self.confirm_story_step(self.session.confirm_story_operations))}
@@ -468,13 +629,15 @@ class SimulatorApp:
             info = (f'예상 완료: {game_time(self.session.minute+run.state.remaining_minutes)}\n'
                     + self.session.deadline_summary(run) + '\n\n서버별 잔여 자원\n' + remaining)
             pages.append(Dialogue('system', info).page())
-        self.story_window = StoryDialogueDialog(self.root, pages, confirm=confirm)
+        self.story_window = self.build_popup(StoryDialogueDialog, self.root, pages, confirm=confirm)
+        self.story_window.bind('<Destroy>', self.tutorial_window_closed, add='+')
         try:
             self.session.mark_story_dialogue(story.dialogue_event)
         except Exception as exc:
             self.story_window.destroy()
             messagebox.showerror('대화 저장 오류', str(exc), parent=self.root)
             return None
+        self.update_tutorial_highlight()
         return self.story_window
 
     def confirm_story_step(self, action):
@@ -489,9 +652,14 @@ class SimulatorApp:
         if (story and not story.preview_confirmed and not story.tutorial_completed and story.request_read
                 and self.resources.book.select() == str(self.resources.review_frame)):
             self._perform(lambda:self.session.inspect_story_preview(self.session.selected_id))
+        self.update_tutorial_highlight()
 
     def show_story_review(self):
-        return StoryReviewDialog(self.root)
+        self.tutorial_highlight.clear()
+        window = StoryReviewDialog(self.root)
+        self.story_reviews.add(window)
+        window.bind('<Destroy>', self.tutorial_window_closed, add='+')
+        return window
 
     def show_story_status(self):
         story = self.session.story
@@ -502,6 +670,9 @@ class SimulatorApp:
         return TextDialog(self.root, '스토리 진행 현황', text)
 
     def show_chapter_complete(self):
+        self.pending_feedback = None
+        if self.feedback_window is not None and self.feedback_window.winfo_exists():
+            self.feedback_window.destroy()
         if self.chapter_window is not None and self.chapter_window.winfo_exists():
             self.chapter_window.lift()
             return self.chapter_window
@@ -524,6 +695,7 @@ class SimulatorApp:
             return False
         self.closed = True
         self.cancel_story_event()
+        self.tutorial_highlight.stop()
         self.root.unbind('<Destroy>', self.story_destroy_binding)
         self.network.stop()
         for widget in self.root.winfo_children():
@@ -563,7 +735,9 @@ class SimulatorApp:
         if self.allocation_window is not None and self.allocation_window.winfo_exists():
             self.allocation_window.lift()
             return self.allocation_window
-        self.allocation_window = AllocationDialog(
+        if self.feedback_window is not None and self.feedback_window.winfo_exists():
+            self.feedback_window.destroy()
+        self.allocation_window = self.build_popup(AllocationDialog,
             self.root, self.session, self.plan_var.get(),
             lambda mode, parts: self._perform(lambda: self.session.choose_plan(mode, server_plan=parts)))
         if self.session.story and self.story_window is not None and self.story_window.winfo_exists():
@@ -573,6 +747,7 @@ class SimulatorApp:
             return None
         if self.session.story:
             self.allocation_window.bind('<Destroy>', self.story_work_window_closed, add='+')
+        self.update_tutorial_highlight()
         return self.allocation_window
     def open_migration_plans(self):
         if self.allocation_window is not None and self.allocation_window.winfo_exists():
@@ -625,12 +800,19 @@ class SimulatorApp:
         return self.open_message(int(selected[0]) if selected else self.session.selected_id)
     def open_message(self, rid):
         was_unread = not self.session.runs[rid].request['is_read']
+        story = self.session.story
+        previous = story.step if story else None
+        anchor = self.story_anchor(previous) if story else None
         try:
             steps = self.session.read_conversation(rid)
         except Exception as exc:
             messagebox.showerror('메시지 확인 오류', str(exc), parent=self.root)
             return
+        if story and story.step != previous:
+            self.queue_story_feedback(previous, anchor)
         self.refresh()
+        if self.feedback_window is not None and self.feedback_window.winfo_exists():
+            self.feedback_window.destroy()
         if self.message_window is not None and self.message_window.winfo_exists():
             self.message_window.destroy()
         run = self.session.current
@@ -640,13 +822,14 @@ class SimulatorApp:
         if (run.proposals and run.proposals[-1]['status'] == 'pending'
                 and run.request['status'] in ('new','review','waiting')):
             confirm = ('고객 답변 확인', lambda count=len(run.proposals): self.review_alternative(rid, count))
-        self.message_window = MessageDialog(self.root, run.mission['company_name'], run.mission['country'], steps,
+        self.message_window = self.build_popup(MessageDialog, self.root, run.mission['company_name'], run.mission['country'], steps,
                                             message_kind='새 메시지' if was_unread else '확인한 메시지 · 현재 상태',
-                                            confirm=confirm)
+                                            confirm=confirm, summary=request_summary(run))
         if self.session.story:
             if self.story_window is not None and self.story_window.winfo_exists():
                 self.story_window.destroy()
             self.message_window.bind('<Destroy>', self.story_work_window_closed, add='+')
+        self.update_tutorial_highlight()
         return self.message_window
     def show_conversation_history(self):
         steps = self.session.conversation(self.session.selected_id, history=True)
@@ -704,7 +887,7 @@ class ModeSelection:
         self.preferred_story = preferred_story
         self.starting = False
         root.protocol('WM_DELETE_WINDOW', root.destroy)
-        root.title('AIDC Simulator v0.9-1b-1 | 모드 선택')
+        root.title('AIDC Simulator v0.9-1d | 모드 선택')
         if root.winfo_width() <= 1:
             root.geometry('1000x650')
         root.minsize(1000, 650)
@@ -752,7 +935,7 @@ class ModeSelection:
         self.story_buttons['continue'].pack(fill='x')
         self.story_buttons['back'] = ActionButton(self.story_panel, '돌아가기', self.show_modes)
         self.story_buttons['back'].pack(anchor='w', pady=(16, 0))
-        self.version_label = label(self.content, 'v0.9-1b-1 · 현재 스토리는 Chapter 1까지 제공됩니다.', 10, MUTED)
+        self.version_label = label(self.content, 'v0.9-1d · 현재 스토리는 Chapter 1까지 제공됩니다.', 10, MUTED)
         self.version_label.pack(anchor='w', pady=(14, 0))
 
     def layout_content(self, event):

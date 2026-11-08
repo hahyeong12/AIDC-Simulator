@@ -15,6 +15,7 @@ from session import GameSession
 from story_slots import StorySlots
 from tests.test_story import gameplay
 from tests.test_story_patch import prepare, finish
+from tests.support import dismiss_story_popups
 
 
 def saved_story(path, complete=False):
@@ -228,13 +229,13 @@ class SlotMenuGuiTests(unittest.TestCase):
         self.assertEqual(dialog.active_role, 'mentor')
         dialog.skip_button.invoke(); dialog.next_button.invoke()
         self.assertEqual(app.session.story.step, 'server')
-        app.story_window.close_button.invoke()
+        dismiss_story_popups(app, self.root)
         app.select_server('B'); self.root.update()
         self.assertEqual(app.session.story.step, 'server')
         app.select_server('A'); self.root.update()
         self.assertEqual(app.session.story.step, 'resources')
         self.assertIn('resources', app.session.story.dialogue_seen)
-        old = app.story_window; old.destroy(); app.refresh(); app.select_server('A')
+        old = app.feedback_window; old.destroy(); app.refresh(); app.select_server('A')
         self.assertFalse(old.winfo_exists())
 
     def test_new_story_full_chapter_through_real_widgets_preserves_old_record(self):
@@ -243,13 +244,13 @@ class SlotMenuGuiTests(unittest.TestCase):
         app = self.new()
         dialog = app.story_window; dialog.skip_button.invoke(); dialog.next_button.invoke()
         self.assertEqual(app.session.story.step, 'server')
-        app.story_window.close_button.invoke()
+        dismiss_story_popups(app, self.root)
         bounds = app.network.rack_bounds['A']
         app.network.event_generate('<Button-1>', x=int((bounds[0]+bounds[2])/2),
                                     y=int((bounds[1]+bounds[3])/2))
         self.root.update()
         self.assertEqual(app.session.story.step, 'resources')
-        app.story_window.close_button.invoke(); app.resource_confirm_button.invoke()
+        dismiss_story_popups(app, self.root); app.resource_confirm_button.invoke()
         self.assertEqual(app.session.story.step, 'request')
         app.arrival_open_button.invoke(); self.root.update()
         self.assertIn('Merlion AI', app.message_window.title())
@@ -262,6 +263,7 @@ class SlotMenuGuiTests(unittest.TestCase):
         self.assertEqual((app.center.gpu_used, app.center.power_used), (7,7))
         app.time_buttons[10].invoke(); self.root.update()
         self.assertGreater(app.state.work_done, 0)
+        app.show_story_help()
         app.story_window.skip_button.invoke(); app.story_window.next_button.invoke()
         app.time_buttons[60].invoke(); app.time_buttons[60].invoke(); self.root.update()
         self.assertTrue(app.session.story.chapter_completed)

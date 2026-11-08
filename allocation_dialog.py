@@ -3,6 +3,7 @@ import tkinter as tk
 
 from server_resources import SERVERS
 from server_console import server_views
+from window_placement import center_dialog
 from server_widgets import (BG, PANEL, EDGE, TEXT, MUTED, CYAN, RED, FONT,
                             gpu_module, reset_hardware, ink)
 
@@ -13,7 +14,7 @@ class AllocationDialog(tk.Toplevel):
         self.session, self.mode, self.on_start = session, mode, on_start
         self.request_id = session.selected_id
         self.migration = migration
-        self.title(('작업 이전 계획' if migration else '서버 배정 계획 비교')+' · v0.9-1b-1')
+        self.title(('작업 이전 계획' if migration else '서버 배정 계획 비교')+' · v0.9-1d')
         self.configure(bg=BG)
         self.transient(parent)
         self.geometry('940x550')
@@ -49,6 +50,7 @@ class AllocationDialog(tk.Toplevel):
         self.close_button = self.button(footer, '닫기', self.destroy)
         self.close_button.grid(row=1, column=2)
         self.reload()
+        center_dialog(self, parent, size=(940, 570), minimum=(880, 540))
         self.grab_set()
 
     @staticmethod
@@ -77,10 +79,16 @@ class AllocationDialog(tk.Toplevel):
         for i in range(3):
             self.cards.columnconfigure(i, weight=0, uniform='')
         self.plan_buttons = []
+        self.plan_cards = []
+        self.card_captions = []
+        self.previous_parts = None
+        self.change_text = ''
         self.comparison_rows = []
         for i, parts in enumerate(self.options):
             self.cards.columnconfigure(i, weight=1, uniform='plans')
-            card = tk.Frame(self.cards, bg=PANEL, highlightthickness=1, highlightbackground=EDGE, padx=7, pady=5)
+            card = tk.Frame(self.cards, bg=PANEL, highlightthickness=3, highlightbackground=EDGE, padx=5, pady=4,
+                            cursor='hand2', takefocus=True)
+            self.plan_cards.append(card)
             card.grid(row=0, column=i, sticky='nsew', padx=3)
             title = '추천안 직접 선택' if i == 0 else f'대안 {i}'
             radio = tk.Radiobutton(card, text=title, variable=self.selection, value=i,
@@ -103,14 +111,63 @@ class AllocationDialog(tk.Toplevel):
             self.comparison_rows.append(rows)
             left_g = sum(v['gpu_available'] for v in self.views)-p['gpu']
             left_p = sum(v['power_available'] for v in self.views)-p['power']
-            tk.Label(card, text=f'{len(parts)}개 서버 사용 · 전체 잔여 {left_g} / {left_p}\n배정 가능 (조회 시점)',
-                     bg=PANEL, fg=CYAN, font=(FONT, 9)).grid(row=6, columnspan=3, pady=(5, 0))
+            caption = tk.Label(card, text=f'{len(parts)}개 서버 사용 · 전체 잔여 {left_g} / {left_p}\n배정 가능 (조회 시점)',
+                               bg=PANEL, fg=CYAN, font=(FONT, 9))
+            caption.grid(row=6, columnspan=3, pady=(5, 0))
+            self.card_captions.append(caption)
+            for widget in (card, *card.winfo_children()):
+                # Radio의 기본 클릭/키보드 동작은 유지합니다.
+                if widget is not radio:
+                    widget.bind('<Button-1>', lambda _, n=i: self.select_card(n))
+                widget.bind('<Enter>', lambda _, n=i: self.paint_cards(n), add='+')
+                widget.bind('<Leave>', lambda _: self.paint_cards(), add='+')
+                widget.configure(cursor='hand2')
+            card.bind('<Return>', lambda _, n=i: self.select_card(n))
+            card.bind('<space>', lambda _, n=i: self.select_card(n))
+            card.bind('<Left>', lambda _, n=i: self.select_card((n-1) % len(self.options), focus=True))
+            card.bind('<Right>', lambda _, n=i: self.select_card((n+1) % len(self.options), focus=True))
         self.auto_button.configure(state='normal' if self.options else 'disabled')
         self.start_button.configure(state='normal' if self.options else 'disabled')
         self.notice.configure(text=('선택은 자원을 점유하지 않습니다. 직접 선택한 안은 슬롯까지 그대로 적용하며, 시작 직전에 다시 검사합니다.'
                                     if self.options else '배정 불가 · '+result['reason']+' · 조건을 확인한 후 다시 조회해 주세요.'),
                               fg=MUTED if self.options else RED)
         self.draw_preview()
+
+    def select_card(self, index, focus=False):
+        self.selection.set(index)
+        if focus:
+            self.plan_cards[index].focus_set()
+        self.draw_preview()
+
+    def paint_cards(self, hover=None):
+        for index, card in enumerate(self.plan_cards):
+            selected = self.selection.get() == index
+            bg = '#253746' if selected else '#182a3b' if hover == index else PANEL
+            card.configure(bg=bg, highlightbackground='#ffe08a' if selected else '#91a7c1' if hover == index else EDGE)
+            for widget in card.winfo_children():
+                widget.configure(bg=bg)
+            self.plan_buttons[index].configure(text=('추천안' if index == 0 else f'대안 {index}')+
+                                                (' · 선택 중 ✓' if selected else ' · 클릭하여 선택'))
+
+    def update_selection(self, parts):
+        self.paint_cards()
+        if self.previous_parts is not None and parts != self.previous_parts:
+            changes = []
+            for server in SERVERS:
+                old = next((p for p in self.previous_parts if p.server_id == server.key), None)
+                new = next((p for p in parts if p.server_id == server.key), None)
+                g = (new.gpu if new else 0)-(old.gpu if old else 0)
+                power = (new.power if new else 0)-(old.power if old else 0)
+                if g or power:
+                    changes.append(f'Server {server.key} '+', '.join(text for text in
+                                   (f'GPU {g:+d}' if g else '', f'전력 {power:+d}' if power else '') if text))
+            self.change_text = '이전 선택 대비: '+(' / '.join(changes) if changes else 'GPU 슬롯 위치 변경')
+        self.previous_parts = parts
+        if not hasattr(self, 'change_label'):
+            self.change_label = tk.Label(self.notice.master, bg=BG, fg='#ffe08a', font=(FONT, 9),
+                                         anchor='w', justify='left', wraplength=880)
+            self.change_label.grid(row=2, columnspan=3, sticky='ew', pady=(4, 0))
+        self.change_label.configure(text=self.change_text)
 
     def draw_preview(self):
         if not hasattr(self, 'options'):
@@ -120,6 +177,7 @@ class AllocationDialog(tk.Toplevel):
         reset_hardware(c)
         index = self.selection.get()
         parts = self.options[max(0, index)] if self.options else ()
+        self.update_selection(parts)
         width = c.winfo_width()
         if width < 100:
             return
@@ -135,8 +193,9 @@ class AllocationDialog(tk.Toplevel):
                 gpu_module(c, mx, my, 64, 27, 'fault' if view['health'] != 'HEALTHY' else 'busy' if owner else 'available',
                            owner['code'] if owner else None, slot)
                 if part and slot in part.gpu_slots:
-                    c.create_rectangle(mx-2, my-2, mx+66, my+29, outline=CYAN, width=2,
-                                       dash=(4, 2), tags=('planned-slot', f'planned-{spec.key}-{slot}'))
+                    c.create_rectangle(mx-3, my-3, mx+67, my+30, outline='#ffe08a', width=3,
+                                       tags=('planned-slot', f'planned-{spec.key}-{slot}'))
+                    c.create_rectangle(mx-5, my-5, mx+69, my+32, outline='#a97d31', width=1, tags='planned-glow')
 
     def start(self):
         if not self.options:
