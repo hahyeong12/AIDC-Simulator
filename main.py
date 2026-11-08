@@ -1,4 +1,4 @@
-"""AIDC Simulator v0.9-1e: 첫 출근부터 업무 완료와 모드 전환까지."""
+"""AIDC Simulator v0.9-2a-2: 첫 출근부터 업무 완료와 모드 전환까지."""
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -8,8 +8,8 @@ from game import RESPONSES, game_time
 from server_console import LiveOverview, LiveServerRoom, ServerPanel, server_views
 from allocation_dialog import AllocationDialog
 from server_widgets import gpu_module, reset_hardware
-from story import GUIDES, STEPS, Dialogue
-from chapter_dialog import ChapterCompleteDialog
+from story import GUIDES, STEPS, Dialogue, chapter2_failure_pages
+from chapter_dialog import ChapterCompleteDialog, Chapter2CompleteDialog
 from story_dialog import StoryDialogueDialog, StoryReviewDialog
 from story_slots import StorySlots
 from tutorial_highlight import TutorialHighlight
@@ -24,7 +24,7 @@ class SimulatorApp:
     def __init__(self, root, db=None, db_factory=Database, story_slots=None, **session_options):
         self.root = root
         self.db_factory, self.closed, self.transitioning = db_factory, False, False
-        root.title('AIDC Simulator v0.9-1e | 울산 AI 데이터센터 관제실')
+        root.title('AIDC Simulator v0.9-2a-2 | 울산 AI 데이터센터 관제실')
         root.geometry(f'{min(1280, root.winfo_screenwidth()-40)}x{min(680, root.winfo_screenheight()-100)}')
         root.minsize(1000, 650)
         root.configure(bg=BG)
@@ -56,7 +56,7 @@ class SimulatorApp:
             self.network.start()
             root.protocol('WM_DELETE_WINDOW', self.on_close)
             if self.session.story:
-                if self.session.story.chapter_completed:
+                if self.session.story.ui_done:
                     self.show_chapter_complete()
                 else:
                     self.show_story_event()
@@ -104,7 +104,7 @@ class SimulatorApp:
         header.grid(row=0, sticky='ew')
         label(header, 'AIDC', 22, CYAN, True).pack(side='left')
         mode_label = '스토리 모드' if self.session.story else '자유 운영 모드'
-        label(header, f'ULSAN / v0.9-1e · {mode_label}', 10, bold=True).pack(side='left', padx=12)
+        label(header, f'ULSAN / v0.9-2a-2 · {mode_label}', 10, bold=True).pack(side='left', padx=12)
         self.notice_var = tk.StringVar()
         self.notice_button = ActionButton(header, 'AIDC LINK', self.open_latest_message)
         self.notice_button.pack(side='right')
@@ -229,11 +229,20 @@ class SimulatorApp:
         self.preview_plan()
         if self.session.story:
             story = self.session.story
-            self.story_objective.configure(text=f'Chapter {story.chapter} · ACTION · 현재 목표: {story.objective}')
+            self.story_objective.configure(text=f'{story.chapter_label} · ACTION · 현재 목표: {story.objective}')
             self.story_skip_button.configure(state='disabled' if story.tutorial_completed else 'normal')
             self.resource_confirm_button.configure(state='normal' if story.step == 'resources' else 'disabled')
-            if story.chapter_completed:
+            if story.chapter2 is not None:
+                # Chapter 2(연습 포함)에는 Chapter 1 건너뛰기가 없습니다. 완료한 뒤에는 결과 창을 다시 열 수 있습니다.
                 self.story_skip_button.grid_remove()
+                if story.chapter2.completed:
+                    self.story_complete_button.configure(text='Chapter 2 결과')
+                    self.story_complete_button.grid(row=0, column=2)
+                else:
+                    self.story_complete_button.grid_remove()
+            elif story.chapter_completed:
+                self.story_skip_button.grid_remove()
+                self.story_complete_button.configure(text=f'{story.chapter_label} 완료')
                 self.story_complete_button.grid(row=0, column=2)
             else:
                 self.story_complete_button.grid_remove()
@@ -245,8 +254,8 @@ class SimulatorApp:
         story = self.session.story
         if (story and not self.closed and not self.transitioning
                 and self.story_objective.winfo_exists()):
-            self.story_objective.configure(text=f'Chapter {story.chapter} · {self.story_phase} · 현재 목표: {story.objective}')
-        if (self.closed or self.transitioning or not story or story.tutorial_completed
+            self.story_objective.configure(text=f'{story.chapter_label} · {self.story_phase} · 현재 목표: {story.objective}')
+        if (self.closed or self.transitioning or not story or story.tutorial_completed or story.chapter2 is not None
                 or story.chapter_completed or story.mission_status == 'closed'
                 or any(w is not None and w.winfo_exists()
                        for w in (self.story_window, self.feedback_window, self.message_window, *self.story_reviews))):
@@ -308,7 +317,10 @@ class SimulatorApp:
         widget = {'server': self.network, 'resources': getattr(self, 'resource_confirm_button', self.resources),
                   'request': self.arrival_open_button, 'preview': self.resources,
                   'allocation': self.action_frame, 'time': self.time_group,
-                  'work_complete': self.time_group, 'operations': self.action_frame}.get(step, self.controls)
+                  'work_complete': self.time_group, 'operations': self.action_frame,
+                  'c2_requests': self.arrival_open_button, 'c2_review': self.resources,
+                  'c2_allocate': self.action_frame, 'c2_progress': self.time_group,
+                  'c2_finish': self.time_group}.get(step, self.controls)
         if step == 'server' and 'A' in self.network.rack_bounds:
             x, y, right, bottom = self.network.rack_bounds['A']
             return self.network.winfo_rootx()+int(x), self.network.winfo_rooty()+int(y), int(right-x), int(bottom-y)
@@ -316,11 +328,11 @@ class SimulatorApp:
 
     def queue_story_feedback(self, previous, anchor):
         story = self.session.story
-        if (not story or previous not in FEEDBACK or story.skipped or story.chapter_completed
-                or story.mission_status == 'closed' or previous not in story.completed_steps):
+        if (not story or previous not in FEEDBACK or story.skipped or story.ui_done
+                or story.mission_status == 'closed' or previous not in story.ui_completed_steps):
             return
         # 완료 단계는 단조 증가합니다. 실행 중 실제 전환에서만 생성하므로 재실행 시 성공을 재생하지 않습니다.
-        token = (previous, story.step)
+        token = (previous, story.ui_step)
         if token not in self.feedback_events:
             self.pending_feedback = (token, previous, anchor)
 
@@ -400,7 +412,7 @@ class SimulatorApp:
         self.arrival_schedule.configure(text=f'다음 {self.session.next_arrival_label} · '
                                        f'{pending}/{MAX_PENDING_REQUESTS}'+(' 보류' if limit_note else ''))
         if self.session.story:
-            self.arrival_schedule.configure(text='Chapter 1 · 미션에 따라 요청 접수')
+            self.arrival_schedule.configure(text=f'{self.session.story.chapter_label} · 미션에 따라 요청 접수')
             story = self.session.story
             if story.step == 'request' and not story.request_read and not story.tutorial_completed:
                 target = self.session.runs[story.request_id]
@@ -520,8 +532,8 @@ class SimulatorApp:
 
     def _perform(self, action):
         story = self.session.story
-        previous = (story.step, story.tutorial_completed, story.chapter_completed) if story else None
-        anchor = self.story_anchor(story.step) if story else None
+        previous = (story.ui_step, story.tutorial_completed, story.ui_done) if story else None
+        anchor = self.story_anchor(story.ui_step) if story else None
         try:
             action()
         except Exception as exc:
@@ -530,11 +542,11 @@ class SimulatorApp:
         self.refresh()
         if story:
             current = self.session.story
-            if current.step != previous[0]:
+            if current.ui_step != previous[0]:
                 if self.story_window is not None and self.story_window.winfo_exists():
                     self.story_window.destroy()
                 self.queue_story_feedback(previous[0], anchor)
-            if current.chapter_completed and not previous[2]:
+            if current.ui_done and not previous[2]:
                 self.show_chapter_complete()
             else:
                 self.show_story_event()
@@ -552,7 +564,7 @@ class SimulatorApp:
     def show_story_event(self):
         """실제 세션 작업 뒤에만 호출합니다. refresh/타이머는 대화를 만들지 않습니다."""
         story = self.session.story
-        if not story or self.closed or self.transitioning or self.story_ui_busy or story.chapter_completed:
+        if not story or self.closed or self.transitioning or self.story_ui_busy or story.ui_done:
             return None
         # 고객 요청/계획을 읽는 중에는 해당 창을 닫은 뒤 사건 대화를 보여 줍니다.
         for window in (self.message_window, self.allocation_window):
@@ -560,6 +572,8 @@ class SimulatorApp:
                 return None
         if self.story_window is not None and self.story_window.winfo_exists():
             return self.story_window
+        if self.session.chapter2_failure_pending:
+            return self.show_chapter2_failure()
         if self.pending_feedback is not None:
             token, completed, anchor = self.pending_feedback
             self.pending_feedback = None
@@ -568,7 +582,7 @@ class SimulatorApp:
             self.tutorial_highlight.clear()
             try:
                 self.feedback_window = self.build_popup(StoryFeedbackDialog, self.root, completed, story.objective, anchor,
-                                                        avoid=(self.story_anchor(story.step),))
+                                                        avoid=(self.story_anchor(story.ui_step),))
             except Exception as exc:
                 self.pending_feedback = (token, completed, anchor)
                 messagebox.showerror('피드백 표시 오류', str(exc), parent=self.root)
@@ -589,11 +603,38 @@ class SimulatorApp:
             return self.feedback_window
         if self.feedback_window is not None and self.feedback_window.winfo_exists():
             return self.feedback_window
-        if (story.dialogue_event in ('arrival', 'request', 'closed', 'skipped')
+        if (story.dialogue_event in ('arrival', 'request', 'closed', 'skipped', 'c2_briefing')
                 and story.dialogue_event not in story.dialogue_seen):
             return self.show_story_help()
         self.update_tutorial_highlight()
         return None
+
+    def show_chapter2_failure(self):
+        """Chapter 2 실패가 확정된 순간 선배가 원인과 다음 선택을 알려 줍니다. 같은 실패는 한 번만 표시합니다."""
+        story = self.session.story
+        if (not story or story.chapter2 is None or not self.session.chapter2_failure_pending
+                or self.closed or self.transitioning):
+            return None
+        self.pending_feedback = None
+        for window in (self.feedback_window, self.story_window):
+            if window is not None and window.winfo_exists():
+                window.destroy()
+        self.tutorial_highlight.clear()
+        pages = [line.page() for line in chapter2_failure_pages(story.chapter2.failure)]
+        pages.insert(len(pages)-1, Dialogue('system', '현재 미션 평가\n'+'\n'.join(self.session.chapter2_evaluation_lines())).page())
+        # 다른 고객의 작업이 진행 중이어도 바로 새 슬롯에서 다시 도전할 수 있습니다.
+        self.story_window = self.build_popup(StoryDialogueDialog, self.root, pages,
+                                             confirm=('Chapter 2 다시 도전', self.retry_chapter2))
+        self.story_window.close_button.configure(text='기존 진행 계속 보기')
+        self.story_window.bind('<Destroy>', self.tutorial_window_closed, add='+')
+        try:
+            self.session.mark_chapter2_failure_seen()
+        except Exception as exc:
+            self.story_window.destroy()
+            messagebox.showerror('실패 안내 저장 오류', str(exc), parent=self.root)
+            return None
+        self.update_tutorial_highlight()
+        return self.story_window
 
     def story_work_window_closed(self, event):
         if self.closed or self.transitioning:
@@ -633,8 +674,9 @@ class SimulatorApp:
         self.tutorial_highlight.clear()
         confirms = {'arrival':('첫 업무 시작', lambda:self.confirm_story_step(self.session.confirm_story_arrival)),
                     'resources':('자원 정보 확인', self.confirm_story_resources),
-                    'operations':('운영 상태 확인', lambda:self.confirm_story_step(self.session.confirm_story_operations))}
-        confirm = confirms.get(story.step) if not story.chapter_completed and not story.skipped else None
+                    'operations':('운영 상태 확인', lambda:self.confirm_story_step(self.session.confirm_story_operations)),
+                    'c2_briefing':('브리핑 확인', lambda:self.confirm_story_step(self.session.confirm_chapter2_briefing))}
+        confirm = confirms.get(story.ui_step) if not story.ui_done and not story.skipped else None
         pages = [line.page() for line in story.dialogue]
         if story.step == 'operations' and not story.chapter_completed:
             run = self.session.runs[story.request_id]
@@ -675,10 +717,17 @@ class SimulatorApp:
 
     def show_story_status(self):
         story = self.session.story
+        if story.chapter2 is not None:
+            chapter2 = '진행 중' if story.chapter2_active else '완료'
+            tail = f'\n\nChapter 2 · 여러 고객 요청과 서버 배정 · {chapter2}\n두 요청의 확인·비교·배정·진행·종료 단계로 진행합니다.'
+        elif story.chapter_completed:
+            tail = '\n\nChapter 2 · 시작 가능\nChapter 1 완료 화면의 [Chapter 2 시작]으로 시작할 수 있습니다. Chapter 3는 이후 개발 예정입니다.'
+        else:
+            tail = '\n\nChapter 2 · Chapter 1 완료 후 시작 가능\nChapter 3는 이후 개발 예정입니다.'
         text = ('Chapter 1 · '+('완료' if story.chapter_completed else '진행 중')
                 + '\n튜토리얼 안내: '+('완료' if story.tutorial_completed else '진행 중')
                 + '\n첫 고객 업무: '+('정상 완료' if story.first_work_completed else '미완료')
-                + '\n\nChapter 2 · 이후 개발 예정\n현재 선택할 수 있는 후속 미션은 없습니다.')
+                + tail)
         return TextDialog(self.root, '스토리 진행 현황', text)
 
     def show_chapter_complete(self):
@@ -690,10 +739,34 @@ class SimulatorApp:
             return self.chapter_window
         if self.story_window is not None and self.story_window.winfo_exists():
             self.story_window.destroy()
-        self.chapter_window = ChapterCompleteDialog(
-            self.root, self.session.chapter_result(), self.return_to_modes,
-            lambda:self.return_to_modes('free'), self.show_story_status, self.show_story_review)
+        if self.session.story.chapter2 is not None:
+            self.chapter_window = Chapter2CompleteDialog(
+                self.root, self.session.chapter2_result(), self.return_to_modes,
+                lambda:self.return_to_modes('free'), self.show_story_status, self.show_story_review,
+                retry=self.retry_chapter2)
+        else:
+            self.chapter_window = ChapterCompleteDialog(
+                self.root, self.session.chapter_result(), self.return_to_modes,
+                lambda:self.return_to_modes('free'), self.show_story_status, self.show_story_review,
+                start_chapter2=self.begin_chapter2)
         return self.chapter_window
+
+    def retry_chapter2(self):
+        """현재 슬롯과 기록은 그대로 저장하고, 새 독립 슬롯에서 Chapter 2를 처음부터 시작합니다."""
+        return self.return_to_modes('chapter2')
+
+    def begin_chapter2(self):
+        """Chapter 1 완료 화면에서 호출합니다. 기존 완료 기록은 그대로 두고 일본·미국 요청만 접수합니다."""
+        if self.closed or self.transitioning:
+            return False
+        old = self.chapter_window
+        if not self._perform(self.session.start_chapter2):
+            return False
+        if old is not None and old.winfo_exists():
+            old.destroy()
+        self.chapter_window = None
+        self.refresh()
+        return True
 
     def return_to_modes(self, mode=None):
         if self.closed or self.transitioning:
@@ -715,7 +788,9 @@ class SimulatorApp:
         self.root.rowconfigure(2, weight=0)
         self.mode_selector = ModeSelection(self.root, db_factory=self.db_factory, story_slots=self.story_slots,
                                            preferred_story=self.db.path if self.session.story else None)
-        if mode is not None:
+        if mode == 'chapter2':
+            self.mode_selector.new_story(2)
+        elif mode is not None:
             self.mode_selector.start(mode)
         return True
 
@@ -730,7 +805,7 @@ class SimulatorApp:
         return False
 
     def skip_tutorial(self):
-        if not self.session.story or self.session.story.tutorial_completed:
+        if not self.session.story or self.session.story.tutorial_completed or self.session.story.chapter2 is not None:
             return False
         if messagebox.askyesno('튜토리얼 건너뛰기',
                                '교육 안내를 건너뛸까요? 고객 업무는 직접 진행하며 스토리 모드는 유지됩니다.', parent=self.root):
@@ -822,14 +897,14 @@ class SimulatorApp:
     def open_message(self, rid):
         was_unread = not self.session.runs[rid].request['is_read']
         story = self.session.story
-        previous = story.step if story else None
+        previous = story.ui_step if story else None
         anchor = self.story_anchor(previous) if story else None
         try:
             steps = self.session.read_conversation(rid)
         except Exception as exc:
             messagebox.showerror('메시지 확인 오류', str(exc), parent=self.root)
             return
-        if story and story.step != previous:
+        if story and story.ui_step != previous:
             self.queue_story_feedback(previous, anchor)
         self.refresh()
         if self.feedback_window is not None and self.feedback_window.winfo_exists():
@@ -912,7 +987,7 @@ class ModeSelection:
         self.preferred_story = preferred_story
         self.starting = False
         root.protocol('WM_DELETE_WINDOW', root.destroy)
-        root.title('AIDC Simulator v0.9-1e | 모드 선택')
+        root.title('AIDC Simulator v0.9-2a-2 | 모드 선택')
         if root.winfo_width() <= 1:
             root.geometry('1000x650')
         root.minsize(1000, 650)
@@ -947,12 +1022,16 @@ class ModeSelection:
             description.pack(anchor='w', pady=(10, 0))
             card.bind('<Configure>', lambda e, text=description:text.configure(wraplength=max(300, e.width-44)))
         self.story_panel = tk.Frame(self.menu_body, bg=PANEL, padx=22, pady=18)
-        label(self.story_panel, '스토리 모드 · Chapter 1', 15, CYAN, True).pack(anchor='w', pady=(0, 10))
+        label(self.story_panel, '스토리 모드 · Chapter 1–2', 15, CYAN, True).pack(anchor='w', pady=(0, 10))
         self.story_buttons = {}
-        self.story_buttons['new'] = ActionButton(self.story_panel, '새 스토리 시작', self.new_story)
+        self.story_buttons['new'] = ActionButton(self.story_panel, 'Chapter 1 새로 시작 · 첫 출근부터', self.new_story)
         self.story_buttons['new'].pack(fill='x')
-        label(self.story_panel, '첫 출근부터 시작합니다. 이전 기록은 별도 슬롯에 보존됩니다.',
-              10, MUTED).pack(anchor='w', pady=(7, 16))
+        label(self.story_panel, '첫 출근부터 정식으로 시작합니다. 이전 기록은 별도 슬롯에 보존됩니다.',
+              10, MUTED).pack(anchor='w', pady=(7, 12))
+        self.story_buttons['chapter2'] = ActionButton(self.story_panel, 'Chapter 2 새로 시작 · 연습', lambda:self.new_story(2))
+        self.story_buttons['chapter2'].pack(fill='x')
+        label(self.story_panel, 'Chapter 1 없이 여러 고객의 요청 미션만 새 슬롯에서 시작합니다. Chapter 1 진행이나 점수로 기록되지 않습니다.',
+              10, MUTED, wraplength=700, justify='left').pack(anchor='w', pady=(7, 16))
         label(self.story_panel, '이어갈 저장 기록', 10, MUTED).pack(anchor='w')
         self.slot_choice = ttk.Combobox(self.story_panel, state='readonly', font=(FONT, 10))
         self.slot_choice.pack(fill='x', pady=7)
@@ -960,7 +1039,7 @@ class ModeSelection:
         self.story_buttons['continue'].pack(fill='x')
         self.story_buttons['back'] = ActionButton(self.story_panel, '돌아가기', self.show_modes)
         self.story_buttons['back'].pack(anchor='w', pady=(16, 0))
-        self.version_label = label(self.content, 'v0.9-1e · 현재 스토리는 Chapter 1까지 제공됩니다.', 10, MUTED)
+        self.version_label = label(self.content, 'v0.9-2a-2 · 현재 스토리는 Chapter 2까지 제공됩니다.', 10, MUTED)
         self.version_label.pack(anchor='w', pady=(14, 0))
 
     def layout_content(self, event):
@@ -970,7 +1049,7 @@ class ModeSelection:
         if self.starting or self.app is not None:
             return
         self.slot_paths = self.story_slots.available()
-        self.slot_choice.configure(values=[self.story_slots.title(p) for p in self.slot_paths])
+        self.slot_choice.configure(values=[self.story_slots.title(p)+self.story_slots.describe(p) for p in self.slot_paths])
         if self.slot_paths:
             preferred = self.preferred_story
             index = self.slot_paths.index(preferred) if preferred in self.slot_paths else len(self.slot_paths)-1
@@ -986,7 +1065,7 @@ class ModeSelection:
             self.story_panel.pack_forget()
             self.mode_panel.pack(fill='x')
 
-    def new_story(self):
+    def new_story(self, chapter=1):
         if self.app is not None or self.starting:
             return self.app
         try:
@@ -994,7 +1073,7 @@ class ModeSelection:
         except Exception as exc:
             messagebox.showerror('새 스토리 시작 오류', str(exc), parent=self.root)
             return None
-        return self.start('story', path=path, fresh=True)
+        return self.start('story', path=path, fresh=True, chapter=chapter)
 
     def continue_story(self):
         index = self.slot_choice.current()
@@ -1002,7 +1081,7 @@ class ModeSelection:
             return None
         return self.start('story', path=self.slot_paths[index], resume=True)
 
-    def start(self, mode, path=None, fresh=False, resume=False):
+    def start(self, mode, path=None, fresh=False, resume=False, chapter=1):
         # 직접 start('story')를 쓰는 기존 호출은 기존 스토리 파일을 이어갑니다.
         if self.app is not None or self.starting:
             return self.app
@@ -1021,8 +1100,9 @@ class ModeSelection:
             if resume and not db.get_simulation():
                 raise ValueError('이 슬롯에는 이어갈 진행 기록이 없습니다. 새 스토리 시작을 이용해 주세요.')
             self.frame.pack_forget()
+            options = {'start_chapter': 2} if chapter == 2 else {}
             self.app = SimulatorApp(self.root, db=db, db_factory=self.db_factory,
-                                    story_slots=self.story_slots, mode=mode)
+                                    story_slots=self.story_slots, mode=mode, **options)
         except Exception as exc:
             if db is not None and not db._game_claimed:
                 db.close()

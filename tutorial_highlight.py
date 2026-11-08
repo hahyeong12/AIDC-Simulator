@@ -3,7 +3,22 @@ import tkinter as tk
 
 GOLD, GOLD_DIM = '#ffe08a', '#d9ae54'
 TAB_KEYS = {'inspector': 0, 'preview': 1}
-POINTER_TEXT = {'time': '▼ 시간 버튼 중 하나를 클릭', 'work_complete': '▼ 시간 버튼 중 하나를 클릭'}
+POINTER_TEXT = {'time': '시간 버튼 중 하나를 클릭', 'work_complete': '시간 버튼 중 하나를 클릭'}
+
+
+def pointer_geometry(rect, container, size, gap=3):
+    """대상 사각형(rect=(x,y,w,h), 컨테이너 좌표) 중앙을 가리키는 안내 위치를 계산합니다.
+    위쪽 공간이 부족하면 아래쪽에 놓고 below=True를 돌려줍니다. 반환: (x, y, below, arrow_x).
+    arrow_x는 안내 상자 안에서 대상 중심이 오는 가로 위치로, 상자가 화면 가장자리에 밀려도 대상을 가리킵니다."""
+    x, y, w, h = rect
+    cw, ch = container
+    pw, ph = size
+    center = x+w/2
+    px = max(0, min(round(center-pw/2), max(0, cw-pw)))
+    below = y-ph-gap < 0
+    py = y+h+gap if below else y-ph-gap
+    py = max(0, min(py, max(0, ch-ph)))
+    return px, py, below, max(0, min(round(center-px), pw))
 
 
 class TutorialHighlight:
@@ -80,7 +95,7 @@ class TutorialHighlight:
                     edge.tutorial_side = (inset, thickness, side)
                     edge.bind('<Button-1>', lambda _: self.activate())
                     self.edges.append(edge)
-        self.pointer = tk.Label(widget.winfo_toplevel(), text=POINTER_TEXT.get(key, '▼ 여기를 클릭'), bg='#251f15', fg=GOLD,
+        self.pointer = tk.Label(widget.winfo_toplevel(), text=POINTER_TEXT.get(key, '여기를 클릭')+'\n▼', justify='center', bg='#251f15', fg=GOLD,
                                 font=('Malgun Gothic', 9, 'bold'), padx=7, pady=2, cursor='hand2')
         self.pointer.bind('<Button-1>', lambda _: self.activate())
         self._paint()
@@ -108,9 +123,18 @@ class TutorialHighlight:
             # 랙에는 Canvas 내부의 별도 클릭 안내를 표시합니다.
             self.pointer.place_forget()
             return
-        x = self.target.winfo_rootx()-top.winfo_rootx()
-        y = self.target.winfo_rooty()-top.winfo_rooty()
-        width, height = self.target.winfo_width(), self.target.winfo_height()
+        rect = None
+        if self.key in TAB_KEYS and hasattr(self.target, 'tutorial_rect'):
+            # 탭은 패널 전체가 아니라 실제 탭 영역을 가리킵니다. 탭이 보이지 않으면 안내도 숨깁니다.
+            rect = self.target.tutorial_rect(TAB_KEYS[self.key])
+            if rect is None:
+                self.pointer.place_forget()
+                return
+            x, y, width, height = rect[0]-top.winfo_rootx(), rect[1]-top.winfo_rooty(), rect[2], rect[3]
+        else:
+            x = self.target.winfo_rootx()-top.winfo_rootx()
+            y = self.target.winfo_rooty()-top.winfo_rooty()
+            width, height = self.target.winfo_width(), self.target.winfo_height()
         for edge in self.edges:
             inset, thickness, side = edge.tutorial_side
             # 버튼의 자식 테두리는 Windows 버튼 자체 그리기에 가려질 수 있어 형제 위젯으로 표시합니다.
@@ -121,9 +145,17 @@ class TutorialHighlight:
             else:
                 edge.place(x=ex if side == 'left' else ex+ew-thickness, y=ey, width=thickness, height=eh)
             edge.lift()
-        x = max(0, min(x, top.winfo_width()-128))
-        py = y-25 if y >= 25 else y+self.target.winfo_height()+2
-        self.pointer.place(x=x, y=min(py, max(0, top.winfo_height()-25)))
+        base = POINTER_TEXT.get(self.key, '여기를 클릭')
+        self.pointer.update_idletasks()
+        size = (self.pointer.winfo_reqwidth(), self.pointer.winfo_reqheight())
+        px, py, below, _ = pointer_geometry((x, y, width, height), (top.winfo_width(), top.winfo_height()), size)
+        # 화살표를 문구 아래/위의 가운데 줄에 두어 상자 중심(=대상 중심)을 정확히 가리킵니다.
+        text = ('▲\n'+base) if below else (base+'\n▼')
+        if self.pointer.cget('text') != text:
+            self.pointer.configure(text=text)
+            size = (self.pointer.winfo_reqwidth(), self.pointer.winfo_reqheight())
+            px, py, below, _ = pointer_geometry((x, y, width, height), (top.winfo_width(), top.winfo_height()), size)
+        self.pointer.place(x=px, y=py)
         self.pointer.lift()
 
     def _paint(self):

@@ -89,26 +89,39 @@ REQUEST_WINDOWS = {
     "미국": ("우선 · 데이터 분석", 40, 120, 240),
 }
 MODE_SPEEDS = {"performance": 1, "economy": .7}
+# Chapter 2 교육 시나리오 전용 요청 조건. scenario가 없는 요청(자유 운영/Chapter 1)은 위의 국가별 규칙을 그대로 씁니다.
+# 두 고객의 고성능 요구량 합계(GPU 10/전력 11)는 전력 10단위를 넘고, 일본의 최종 배정 기한(80분)은
+# 미국 고성능 작업(100분)이 끝나기 전이므로 요청 순서·운영 모드·대기 여부가 실제 결과를 바꿉니다.
+SCENARIOS = {
+    "ch2_jp": {"plans": {"performance": {"label": "고성능 모드", "gpu": 4, "power": 5, "network": 3, "bonus": 15},
+                         "economy": {"label": "절약형 모드", "gpu": 2, "power": 3, "network": 2, "bonus": 5}},
+               "work": 40, "window": ("긴급 · 로봇 추론", 10, 50, 80)},
+    "ch2_us": {"plans": {"performance": {"label": "고성능 모드", "gpu": 6, "power": 6, "network": 6, "bonus": 15},
+                         "economy": {"label": "절약형 모드", "gpu": 4, "power": 3, "network": 5, "bonus": 5}},
+               "work": 100, "window": ("우선 · 데이터 분석", 40, 150, 240)},
+}
 
 
 def game_time(minute):
     return f'D{minute//1440+1} {minute//60%24:02d}:{minute%60:02d}'
 
 
-def request_terms(country, minute):
-    priority, start, due, expiry = REQUEST_WINDOWS.get(country, REQUEST_WINDOWS["싱가포르"])
+def request_terms(country, minute, scenario=None):
+    window = SCENARIOS[scenario]["window"] if scenario else REQUEST_WINDOWS.get(country, REQUEST_WINDOWS["싱가포르"])
+    priority, start, due, expiry = window
     return {'priority': priority, 'received': minute, 'start_due': minute+start,
             'due': minute+due, 'expires': minute+expiry, 'alerts': []}
 
 
-def request_conditions(mission, due):
+def request_conditions(mission, due, scenario=None):
     """신규 접수 때만 고객 의사와 자원 조건을 고정합니다. 과거 요청에는 적용하지 않습니다."""
     # 긴급 추론과 지정 환경의 학습은 고성능 요청, 배치 분석은 두 환경을 허용합니다.
     flexible = mission['country'] == '미국'
     return {'type': 'flexible' if flexible else 'fixed', 'task': mission['title'],
             'requested_mode': 'performance',
             'allowed_modes': ['performance', 'economy'] if flexible else ['performance'],
-            'plans': {key: dict(plan, mode=key) for key, plan in plans_for(mission['country']).items()},
+            'plans': {key: dict(plan, mode=key) for key, plan in
+                      (SCENARIOS[scenario]["plans"] if scenario else plans_for(mission['country'])).items()},
             'due': due}
 
 
@@ -136,6 +149,7 @@ class GameState:
     response_attempts: int = 0
     cost_penalty: int = 0
     retry_count: int = 0
+    scenario: str | None = None  # Chapter 2 전용 요청 조건 이름. 없으면 국가별 기본 규칙
 
     def __post_init__(self):
         if self.center is None:
@@ -143,7 +157,7 @@ class GameState:
 
     @property
     def plans(self):
-        return plans_for(self.country)
+        return SCENARIOS[self.scenario]["plans"] if self.scenario else plans_for(self.country)
 
     @property
     def allocated(self):
@@ -151,7 +165,7 @@ class GameState:
 
     @property
     def work_total(self):
-        return WORK_TOTAL.get(self.country, 120)
+        return SCENARIOS[self.scenario]["work"] if self.scenario else WORK_TOTAL.get(self.country, 120)
 
     @property
     def progress(self):

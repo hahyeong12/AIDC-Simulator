@@ -341,7 +341,7 @@ class PatchGuiTests(unittest.TestCase):
 
     def test_completion_screen_uses_actual_results_and_four_actions(self):
         window = self.complete()
-        self.assertEqual(set(window.buttons), {'modes', 'free', 'status', 'review'})
+        self.assertEqual(set(window.buttons), {'modes', 'free', 'status', 'review', 'chapter2'})
         self.assertIn(f'{self.app.state.score}점', window.full_text)
         self.assertIn('반환 GPU: 7개', window.full_text)
         self.assertIn('반환 전력: 7단위', window.full_text)
@@ -363,13 +363,13 @@ class PatchGuiTests(unittest.TestCase):
         review.next_button.invoke(); review.previous_button.invoke(); review.skip_button.invoke(); review.destroy()
         self.assertEqual((gameplay(self.app.session), self.app.session.story.payload(), '\n'.join(self.app.db.conn.iterdump())), before)
 
-    def test_status_displays_unavailable_chapter_without_an_active_chapter_two_button(self):
+    def test_status_offers_chapter_two_start_button_after_chapter_one(self):
         self.complete()
         status = self.app.show_story_status()
         text = status.text.get('1.0', 'end')
         self.assertIn('Chapter 1 · 완료', text)
-        self.assertIn('Chapter 2 · 이후 개발 예정', text)
-        self.assertEqual(set(self.app.chapter_window.buttons), {'modes', 'free', 'status', 'review'})
+        self.assertIn('Chapter 2 · 시작 가능', text)
+        self.assertEqual(set(self.app.chapter_window.buttons), {'modes', 'free', 'status', 'review', 'chapter2'})
 
     def test_completion_return_to_selection_closes_database_and_timer(self):
         win = self.complete(); old = self.app

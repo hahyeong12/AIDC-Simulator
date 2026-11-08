@@ -8,6 +8,7 @@ from database import Database
 from game import DataCenter, GameState, RESPONSES, request_terms, request_conditions, game_time
 from server_resources import ServerPool, Allocation, SERVERS, ServerHealth
 from story import StoryProgress
+from chapter2 import Chapter2Progress, CHAPTER2_COUNTRIES, CHAPTER2_SCENARIOS, is_finished
 
 REQUEST_LABELS = {'new':'신규 요청','review':'검토 중','waiting':'대기',
                   'operating':'수락','rejected':'거절','completed':'처리 완료'}
@@ -39,13 +40,15 @@ class MissionRun:
 
 
 class GameSession:
-    def __init__(self, db: Database, seed=None, incident_chance=None, mode='free'):
+    def __init__(self, db: Database, seed=None, incident_chance=None, mode='free', start_chapter=1):
         self.db, self.center = db, DataCenter()
         self.servers = ServerPool()
         self.missions = {m['id']:m for m in db.get_missions()}
         saved = db.get_simulation()
         if mode not in ('free', 'story'):
             raise ValueError('존재하지 않는 게임 모드입니다.')
+        if start_chapter not in (1, 2) or (start_chapter == 2 and (mode != 'story' or saved)):
+            raise ValueError('Chapter 2 연습은 비어 있는 새 스토리 슬롯에서만 시작할 수 있습니다.')
         if saved and saved.get('mode', 'free') != mode:
             raise ValueError('선택한 모드와 저장 파일이 다릅니다. 모드별 저장 파일을 사용해 주세요.')
         if mode == 'story' and not saved and db.get_requests():
@@ -55,7 +58,7 @@ class GameSession:
             raise ValueError('저장된 스토리 진행 기록을 찾을 수 없습니다.')
         self.story = None
         if mode == 'story' and not saved:
-            self.story = StoryProgress()
+            self.story = StoryProgress(practice=start_chapter == 2)
         self.minute = saved['minute'] if saved else 540
         self.seed = saved['seed'] if saved else (seed if seed is not None else random.SystemRandom().randrange(2**31))
         self.roll_index = saved['roll_index'] if saved else 0
@@ -66,15 +69,19 @@ class GameSession:
         self.selected_id = None
         for request in db.get_requests():
             self.runs[request['id']] = self._load_run(request)
-        if mode == 'story' and saved:
+        if mode == 'story' and saved and saved['story'].get('practice') is True:
+            self.story = StoryProgress.from_payload(saved['story'], None, False)
+        elif mode == 'story' and saved:
             rid = saved['story'].get('request_id')
             if type(rid) is not int or rid not in self.runs:
                 raise ValueError('스토리의 첫 고객 요청을 찾을 수 없습니다.')
             run = self.runs[rid]
             self.story = StoryProgress.from_payload(saved['story'], run, self.plan_agreed(run, run.state.plan))
-        if saved and self.story and (self.story.request_id not in self.runs
+        if saved and self.story and not self.story.practice and (self.story.request_id not in self.runs
                 or self.runs[self.story.request_id].mission['country'] != '싱가포르'):
             raise ValueError('스토리의 첫 고객 요청을 찾을 수 없습니다.')
+        if saved:
+            self._validate_chapter2()
         self._restore_servers()
         hardware = saved.get('server_health', {}) if saved else {}
         if not isinstance(hardware, dict) or set(hardware)-{s.key for s in SERVERS}:
@@ -94,10 +101,12 @@ class GameSession:
                                              max(times, default=self.minute-CUSTOMER_COOLDOWN))
         if not self.runs:
             self.deliver_next_request()
-        if self.story and self.story.request_id not in self.runs:
+        if self.story and not self.story.practice and self.story.request_id not in self.runs:
             raise ValueError('스토리의 첫 고객 요청을 찾을 수 없습니다.')
         self.selected_id = next((rid for rid,r in self.runs.items() if r.request['status'] not in ('completed','rejected')),
                                 next(reversed(self.runs)))
+        if saved and self.story and self.story.chapter2 is not None:
+            self._detect_chapter2_failure(on_load=True)
 
     @property
     def current(self):
@@ -226,6 +235,9 @@ class GameSession:
                 if self.story and self.story.request_id in self.runs:
                     run = self.runs[self.story.request_id]
                     self.story.update(run, self.plan_agreed(run, run.state.plan))
+                if self.story and self.story.chapter2 is not None:
+                    self.story.chapter2.update(self.runs)
+                    self._detect_chapter2_failure()
                 self._persist()
         except Exception:
             self.runs.clear()
@@ -252,7 +264,7 @@ class GameSession:
                 self.story.dialogue_seen.append(event)
 
     def select_story_server(self, server_id):
-        if not self.story or self.story.tutorial_completed:
+        if not self.story or self.story.tutorial_completed or self.story.chapter2 is not None:
             return
         if server_id not in {s.key for s in SERVERS}:
             raise ValueError('존재하지 않는 서버입니다.')
@@ -274,6 +286,12 @@ class GameSession:
             self.story.introduction_confirmed = True
 
     def inspect_story_preview(self, request_id):
+        if self.story and self.story.chapter2_active:
+            # Chapter 2: 비교 창에서 계획을 직접 고른 요청만 검토로 기록합니다.
+            if request_id in self.story.chapter2.request_ids and request_id not in self.story.chapter2.reviewed:
+                with self._atomic():
+                    self.story.chapter2.mark_reviewed(request_id)
+            return
         if not self.story or self.story.tutorial_completed or self.story.preview_confirmed:
             return
         if request_id != self.story.request_id or not self.story.request_read:
@@ -304,6 +322,310 @@ class GameSession:
                 'on_time':run.terms['completed'] <= run.terms['due'] if run.terms else None,
                 'gpu':s.gpu_used, 'power':s.power_used, 'servers':statuses,
                 'feedback':run.last_feedback, 'request_id':run.request['id'], 'playthrough_id':run.playthrough_id}
+
+    # ---- Chapter 2 -------------------------------------------------------------------------
+    def _validate_chapter2(self):
+        chapter2 = self.story.chapter2 if self.story else None
+        if chapter2 is None:
+            if self.story and self.story.practice:
+                raise ValueError('Chapter 2 연습 슬롯의 고객 요청 기록이 없습니다.')
+            return
+        countries = []
+        for rid in chapter2.request_ids:
+            run = self.runs.get(rid)
+            if run is None:
+                raise ValueError('Chapter 2의 고객 요청을 찾을 수 없습니다.')
+            countries.append(run.mission['country'])
+        if tuple(countries) != CHAPTER2_COUNTRIES:
+            raise ValueError('Chapter 2의 고객 요청이 저장된 미션과 일치하지 않습니다.')
+
+    def start_chapter2(self):
+        """Chapter 1을 정상 완료한 스토리에서만 일본·미국 요청을 접수합니다. 기존 기록은 변경하지 않습니다."""
+        if not self.story or not self.story.chapter_completed:
+            raise ValueError('Chapter 1을 정상 완료한 뒤 Chapter 2를 시작할 수 있습니다.')
+        if self.story.chapter2 is not None:
+            raise ValueError('이미 Chapter 2를 시작했습니다.')
+        return self._open_chapter2()
+
+    def _open_chapter2(self):
+        """일본·미국의 고정 교육 요청을 새로 접수합니다. 다른 슬롯의 기록은 읽거나 가져오지 않습니다."""
+        mission_ids = []
+        for country in CHAPTER2_COUNTRIES:
+            mid = next((mid for mid, m in self.missions.items() if m['country'] == country), None)
+            if mid is None:
+                raise ValueError(f'{country} 고객 미션을 찾을 수 없습니다.')
+            mission_ids.append((mid, CHAPTER2_SCENARIOS[country]))
+        with self._atomic():
+            ids = [self._receive(mid, f'chapter2:{mid}', scenario) for mid, scenario in mission_ids]
+            self.story.chapter2 = Chapter2Progress(*ids)
+            self.selected_id = ids[0]
+        return tuple(ids)
+
+    def confirm_chapter2_briefing(self):
+        if not self.story or not self.story.chapter2_active or self.story.chapter2.step != 'briefing':
+            raise ValueError('현재는 Chapter 2 브리핑 단계가 아닙니다.')
+        with self._atomic():
+            self.story.chapter2.briefing_confirmed = True
+
+    def allocation_impacts(self, run, parts):
+        """선택한 배정안을 가정했을 때 다른 Chapter 2 요청의 고객 허용 모드가 배정 가능한지 현재 원장으로 계산합니다.
+        조회 전용 복사본만 사용하며 원장/DB를 변경하지 않습니다."""
+        story = self.story
+        if (not story or not story.chapter2_active or not parts
+                or run.request['id'] not in story.chapter2.request_ids):
+            return []
+        pool = self.servers.excluding(None)
+        try:
+            pool.reserve(Allocation(10**9, tuple(parts)))
+        except (ValueError, TypeError):
+            return []
+        lines = []
+        for rid in story.chapter2.request_ids:
+            other = self.runs[rid]
+            if other is run or other.state.allocated or other.request['status'] not in ('new', 'review', 'waiting'):
+                continue
+            results = []
+            for key, plan in other.state.plans.items():
+                if self.plan_agreed(other, key):
+                    ok = pool.plan(plan['gpu'], plan['power']) is not None
+                    results.append(f'{plan["label"]} GPU {plan["gpu"]}/전력 {plan["power"]} '+('배정 가능' if ok else '배정 불가'))
+            if results:
+                lines.append(f'{other.mission["country"]} {other.mission["company_name"]}: '+' · '.join(results))
+        return lines
+
+    def chapter2_briefing_lines(self, run):
+        """판단에 필요한 실제 수치: 모드별 처리 시간·예상 완료·기한 준수 여부, 현재 자원으로 두 요청의 원래 조건을 함께 실행할 수 있는지.
+        조회 전용이며 값은 모두 현재 엔진 상태에서 계산합니다."""
+        story = self.story
+        if (not story or not story.chapter2_active or run.request['id'] not in story.chapter2.request_ids
+                or run.state.allocated or run.request['status'] not in ('new', 'review', 'waiting')):
+            return []
+        lines = []
+        due = run.terms.get('due')
+        for key, plan in run.state.plans.items():
+            if not self.plan_agreed(run, key):
+                continue
+            minutes = run.state.estimate_minutes(key)
+            finish = self.minute + minutes
+            status = '' if due is None else (' · 기한 내' if finish <= due else f' · 기한 {finish-due}분 초과')
+            lines.append(f'{plan["label"]} GPU {plan["gpu"]}/전력 {plan["power"]}: 처리 {minutes}분 → 지금 시작하면 {game_time(finish)} 완료{status}')
+        pending = [self.runs[rid] for rid in story.chapter2.request_ids
+                   if self.runs[rid].request['status'] in ('new', 'review', 'waiting') and not self.runs[rid].state.allocated]
+        if len(pending) == 2:
+            mode = lambda r: r.conditions['requested_mode'] if r.conditions else 'performance'
+            need_gpu = sum(r.state.plans[mode(r)]['gpu'] for r in pending)
+            need_power = sum(r.state.plans[mode(r)]['power'] for r in pending)
+            gpu, power = self.servers.available()
+            gpu, power = min(gpu, self.center.available_gpu()), min(power, self.center.available_power())
+            ok = need_gpu <= gpu and need_power <= power
+            lines.append(f'두 고객의 원래 요청 동시 실행: 필요 GPU {need_gpu}/전력 {need_power} · 현재 가용 GPU {gpu}/전력 {power} → '
+                         + ('가능' if ok else '불가'))
+        return lines
+
+    # ---- Chapter 2 성공/실패 판정 ---------------------------------------------------------------
+    def _chapter2_start_bound(self, run):
+        """아직 시작하지 않은 요청이 가장 빨리 끝낼 수 있는 시각의 하한. 값은 현재 자원·진행 중 작업의 남은 시간에서 계산합니다."""
+        best = None
+        running = [r for r in self.runs.values() if r.state.allocated]
+        release = min((self.minute + r.state.remaining_minutes for r in running), default=self.minute)
+        for key in run.state.plans:
+            if not self.plan_agreed(run, key):
+                continue
+            allowed = self.allocation_preview(run, key)['allowed']
+            start = self.minute if allowed or not running else release
+            finish = start + run.state.estimate_minutes(key)
+            if best is None or finish < best[0]:
+                best = (finish, start, key, allowed)
+        return best
+
+    def chapter2_job_state(self, run):
+        """('success'|'failed'|'running'|'pending', 이유). 실제 요청/작업 상태와 시간에서만 판정합니다."""
+        s, t = run.state, run.terms
+        due = t.get('due')
+        if t.get('expired'):
+            return 'failed', 'expired'
+        if run.request['status'] == 'rejected':
+            return 'failed', 'rejected'
+        if s.phase == 'finished':
+            if run.request['status'] == 'completed' and s.succeeded:
+                return ('success', None) if due is None or t.get('completed', self.minute) <= due else ('failed', 'late')
+            return ('failed', 'failed') if run.followup_closed else ('pending', None)
+        if s.allocated:
+            return ('failed', 'late_certain') if due is not None and self.minute + s.remaining_minutes > due else ('running', None)
+        bound = self._chapter2_start_bound(run)
+        if bound is not None and due is not None and bound[0] > due:
+            return 'failed', 'late_certain'
+        return 'pending', None
+
+    def _chapter2_failure_record(self, run, reason):
+        s, t = run.state, run.terms
+        record = {'request_id': run.request['id'], 'reason': reason, 'minute': self.minute, 'time': game_time(self.minute),
+                  'company': run.mission['company_name'], 'country': run.mission['country'],
+                  'due': game_time(t['due']) if t.get('due') is not None else None,
+                  'expiry': game_time(t['expires']) if t.get('expires') is not None else None,
+                  'late_minutes': t.get('late_minutes'),
+                  'waited': (t['started']-t['received']) if t.get('started') is not None else None,
+                  'mode': s.plans[s.plan]['label'] if s.plan else None,
+                  'minutes': ((t.get('completed', self.minute + (s.remaining_minutes if s.allocated else 0)) - t['started'])
+                              if t.get('started') is not None else None),
+                  'blocker': None, 'earliest_finish': None}
+        if reason in ('late_certain', 'expired') and not s.allocated and run.playthrough_id is None:
+            bound = self._chapter2_start_bound(run) if reason == 'late_certain' else None
+            if bound is not None:
+                record['earliest_finish'] = game_time(bound[0])
+            holders = [r for r in self.runs.values() if r is not run and r.state.allocated]
+            if holders and (bound is None or not bound[3]):
+                holder = min(holders, key=lambda r: r.state.remaining_minutes)
+                plan = holder.state.plans[holder.state.plan]
+                record['blocker'] = {'country': holder.mission['country'], 'company': holder.mission['company_name'],
+                                     'mode': plan['label'], 'gpu': holder.state.gpu_used, 'power': holder.state.power_used,
+                                     'until': game_time(self.minute + holder.state.remaining_minutes)}
+        other = next((self.runs[rid] for rid in self.story.chapter2.request_ids if rid != run.request['id']), None)
+        if other is not None:
+            record['other'] = {'country': other.mission['country'], 'state': self.chapter2_job_state(other)[0]}
+        return record
+
+    def _detect_chapter2_failure(self, on_load=False):
+        """처음 확정된 실패를 한 번만 기록합니다. 기록은 이후 성공으로 바뀌지 않습니다."""
+        chapter2 = self.story.chapter2 if self.story else None
+        if chapter2 is None or chapter2.failure is not None:
+            return
+        for rid in chapter2.request_ids:
+            run = self.runs[rid]
+            state, reason = self.chapter2_job_state(run)
+            if state == 'failed':
+                chapter2.failure = self._chapter2_failure_record(run, reason)
+                # 이전 버전에서 이미 끝난 저장은 새로 안내하지 않습니다(결과 화면에 실패가 표시됩니다).
+                chapter2.failure_seen = bool(on_load and chapter2.completed)
+                return
+
+    def mark_chapter2_failure_seen(self):
+        chapter2 = self.story.chapter2 if self.story else None
+        if chapter2 is None or chapter2.failure is None:
+            raise ValueError('확정된 Chapter 2 실패가 없습니다.')
+        if not chapter2.failure_seen:
+            with self._atomic():
+                chapter2.failure_seen = True
+
+    @property
+    def chapter2_failure_pending(self):
+        chapter2 = self.story.chapter2 if self.story else None
+        return bool(chapter2 is not None and chapter2.failure is not None and not chapter2.failure_seen)
+
+    def chapter2_evaluation(self):
+        """고객별 미션 평가와 종합 점수. 미처리·실패 고객은 0점, 끝나지 않은 작업은 확정 전으로 표시합니다.
+        기존 고객별 점수와 기한 감점은 그대로 사용하며 실패 패널티를 따로 더하지 않습니다."""
+        story = self.story
+        if not story or story.chapter2 is None:
+            raise ValueError('Chapter 2 진행 기록이 없습니다.')
+        jobs = []
+        for rid in story.chapter2.request_ids:
+            run = self.runs[rid]
+            state, reason = self.chapter2_job_state(run)
+            final = is_finished(run)
+            score = None
+            if final:
+                score = run.state.score if (run.state.succeeded and run.request['status'] == 'completed') else 0
+            jobs.append({'request_id': rid, 'company': run.mission['company_name'], 'country': run.mission['country'],
+                         'state': state, 'reason': reason, 'final': final, 'score': score,
+                         'raw_score': run.state.score})
+        overall = (sum(j['score'] for j in jobs)/2) if all(j['final'] for j in jobs) else None
+        failed = story.chapter2.failure is not None or any(j['state'] == 'failed' for j in jobs)
+        mission = 'failed' if failed else 'success' if all(j['state'] == 'success' for j in jobs) else 'in_progress'
+        return {'jobs': jobs, 'overall': overall, 'mission': mission}
+
+    def chapter2_evaluation_lines(self):
+        names = {'expired': '기한 만료 · 미처리', 'rejected': '거절', 'failed': '실패', 'late': '기한 초과 완료',
+                 'late_certain': '기한 내 완료 불가'}
+        lines = []
+        evaluation = self.chapter2_evaluation()
+        for job in evaluation['jobs']:
+            if job['final']:
+                note = '정상 완료 · 기한 내' if job['state'] == 'success' else names[job['reason']]
+                lines.append(f'{job["country"]} {job["company"]}: {job["score"]}점 ({note})')
+            else:
+                note = f' · {names[job["reason"]]}' if job['state'] == 'failed' else ''
+                lines.append(f'{job["country"]} {job["company"]}: 진행 중 · 점수 확정 전{note}')
+        lines.append('Chapter 2 종합 평가: '+(f'{evaluation["overall"]:g}/100' if evaluation['overall'] is not None
+                                          else '미확정(두 작업이 끝나면 확정)'))
+        return lines
+
+    def chapter2_result(self):
+        story = self.story
+        if not story or story.chapter2 is None or not story.chapter2.completed:
+            raise ValueError('두 고객 요청을 모두 마무리한 뒤 결과를 확인할 수 있습니다.')
+        jobs = []
+        for rid in story.chapter2.request_ids:
+            run = self.runs[rid]
+            s = run.state
+            if not is_finished(run):
+                raise ValueError('고객 요청의 종료 상태를 확인할 수 없습니다.')
+            if run.terms.get('expired'):
+                outcome = '기한 만료 · 미처리'
+            elif run.request['status'] == 'rejected':
+                outcome = '거절'
+            elif s.succeeded:
+                outcome = '정상 완료'
+            else:
+                outcome = '실패 · 재처리 종료'
+            last = next((a for a in reversed(run.server_allocations) if a.playthrough_id == run.playthrough_id), None)
+            terms = run.terms
+            jobs.append({'request_id': rid, 'company': run.mission['company_name'], 'country': run.mission['country'],
+                         'task': run.mission['title'], 'outcome': outcome, 'succeeded': bool(s.succeeded),
+                         'score': s.score, 'on_time': (terms['completed'] <= terms['due'] if 'completed' in terms and not terms.get('expired') else None),
+                         'mode': s.plans[s.plan]['label'] if s.plan else '미배정',
+                         'gpu': s.gpu_used if run.playthrough_id else 0, 'power': s.power_used if run.playthrough_id else 0,
+                         'placement': ', '.join(f'{p.server_id} GPU {p.gpu}/전력 {p.power}' for p in last.slices) if last else '배정 없음',
+                         'started': terms.get('started'), 'completed': terms.get('completed')})
+        for job in jobs:
+            run = self.runs[job['request_id']]
+            terms = run.terms
+            job.update(waited=(terms['started']-terms['received']) if terms.get('started') is not None else None,
+                       late_minutes=terms.get('late_minutes'), penalty=terms.get('penalty'),
+                       expired=bool(terms.get('expired')), expiry=terms.get('expires'),
+                       wait_choices=sum(1 for e in self.db.get_request_events(job['request_id'])
+                                        if e['kind'] == 'decision' and '대기 · 자원 미점유' in e['message']),
+                       proposals=[p['status'] for p in run.proposals])
+        windows = [(j['started'], j['completed']) for j in jobs if j['started'] is not None and j['completed'] is not None]
+        concurrent = len(windows) == 2 and max(w[0] for w in windows) < min(w[1] for w in windows)
+        # 아래 문장은 저장된 시작/종료 시각과 결과에서만 만듭니다. 기록이 없는 행동은 쓰지 않습니다.
+        decisions = []
+        started = sorted((j for j in jobs if j['started'] is not None), key=lambda j: (j['started'], j['request_id']))
+        if len(started) == 2 and started[0]['started'] == started[1]['started']:
+            decisions.append(f'두 작업을 같은 시각({game_time(started[0]["started"])})에 시작했습니다.')
+        elif started:
+            decisions.append(f'먼저 배정한 고객: {started[0]["country"]} {started[0]["company"]} ({game_time(started[0]["started"])})')
+        for job in jobs:
+            line = f'{job["country"]}: {job["mode"] if job["started"] is not None else "배정 없음"}'
+            if job['waited'] is not None:
+                line += f' · 접수 후 {job["waited"]}분 뒤 시작'
+            if job['wait_choices']:
+                line += f' · 요청 대기 {job["wait_choices"]}회'
+            if job['proposals']:
+                line += ' · 대안 협의 '+'/'.join({'accepted': '동의', 'rejected': '거절', 'pending': '답변 대기'}[p] for p in job['proposals'])
+            if job['on_time'] is True:
+                line += ' · 기한 내 완료'
+            elif job['on_time'] is False:
+                line += f' · 기한 {job["late_minutes"]}분 초과'
+            if job['penalty']:
+                line += f' · 기한 감점 {job["penalty"]}점'
+            line += f' · {job["outcome"]}'
+            decisions.append(line)
+            if job['expired']:
+                holder = next((o for o in jobs if o is not job and o['started'] is not None and o['completed'] is not None
+                               and o['started'] <= job['completed'] < o['completed']), None)
+                if holder is not None:
+                    decisions.append(f'{holder["country"]} {holder["company"]} 작업은 {game_time(holder["completed"])}에야 자원을 반환했습니다. '
+                                     f'{job["country"]} 요청은 최종 배정 기한({game_time(job["expiry"])})까지 시작하지 못했습니다.')
+        statuses = {spec.key: (self.servers.hardware[spec.key].state if self.servers.hardware[spec.key].state != 'HEALTHY'
+                               else 'ACTIVE' if any(part.server_id == spec.key for a in self.servers.allocations.values()
+                                                    for part in a.slices) else 'IDLE') for spec in SERVERS}
+        evaluation = self.chapter2_evaluation()
+        for job, scored in zip(jobs, evaluation['jobs']):
+            job.update(eval_score=scored['score'], state=scored['state'], reason=scored['reason'])
+        return {'jobs': jobs, 'concurrent': concurrent, 'servers': statuses, 'decisions': decisions,
+                'practice': bool(story.practice), 'mission': evaluation['mission'], 'overall': evaluation['overall'],
+                'failure': deepcopy(story.chapter2.failure)}
 
     def skip_tutorial(self):
         if self.story and not self.story.tutorial_completed:
@@ -429,18 +751,23 @@ class GameSession:
                 + f'\n완료 기한: {game_time(conditions["due"])} · 기한까지 처리해 주세요.\n\n'
                 + '가능한 자원과 운영 일정을 확인해 회신 부탁드립니다. 감사합니다.')
 
-    def _receive(self, mid, key=None):
+    def _receive(self, mid, key=None, scenario=None):
         existing = self.db.find_request_by_source(key) if key is not None else None
         if existing is not None:
             if existing['id'] not in self.runs:
                 self.runs[existing['id']] = self._load_run(existing)
             return existing['id']
-        terms = request_terms(self.missions[mid]['country'], self.minute)
-        conditions = request_conditions(self.missions[mid], terms['due'])
+        terms = request_terms(self.missions[mid]['country'], self.minute, scenario)
+        conditions = request_conditions(self.missions[mid], terms['due'], scenario)
         message = self._message(self.missions[mid], conditions)
+        if scenario:
+            probe = GameState(center=DataCenter(), country=self.missions[mid]['country'], scenario=scenario)
+            message += ('\n\n예상 처리 시간(시작 후, 장애·대기 제외): '
+                        + ' / '.join(f'{p["label"]} {probe.estimate_minutes(k)}분' for k, p in probe.plans.items()))
         rid = self.db.create_request(mid,message,key)
         run = self._load_run(self.db.get_request(rid))
         self.runs[rid] = run
+        run.state.scenario = scenario
         run.terms, run.conditions = terms, conditions
         self.arrival_last[mid] = self.minute
         self._emit(run,'arrival',f'새 업무 메시지: {run.mission["company_name"]} · {run.mission["country"]}')
@@ -453,6 +780,8 @@ class GameSession:
         if self.story:
             if self.runs:
                 return None
+            if self.story.practice:
+                return self._open_chapter2()[0]
             mid = next(mid for mid, m in self.missions.items() if m['country'] == '싱가포르')
             with self._atomic():
                 rid = self._receive(mid, f'initial:{mid}')
@@ -992,6 +1321,8 @@ class GameSession:
             self.selected_id = rid
             if self.story and self.story.request_id == rid:
                 self.story.request_read = True
+            if self.story and self.story.chapter2_active:
+                self.story.chapter2.mark_read(rid)
         return steps
 
     def recent_records(self):

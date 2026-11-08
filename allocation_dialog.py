@@ -15,11 +15,11 @@ class AllocationDialog(tk.Toplevel):
         self.on_review, self.on_reload = on_review, on_reload
         self.request_id = session.selected_id
         self.migration = migration
-        self.title(('작업 이전 계획' if migration else '서버 배정 계획 비교')+' · v0.9-1e')
+        self.title(('작업 이전 계획' if migration else '서버 배정 계획 비교')+' · v0.9-2a-2')
         self.configure(bg=BG)
         self.transient(parent)
-        self.geometry('940x590')
-        self.minsize(880, 560)
+        self.geometry('940x680')
+        self.minsize(880, 630)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(3, weight=1)
         self.selection = tk.IntVar(value=-1)
@@ -51,7 +51,7 @@ class AllocationDialog(tk.Toplevel):
         self.close_button = self.button(footer, '닫기', self.destroy)
         self.close_button.grid(row=1, column=2)
         self.reload()
-        center_dialog(self, parent, size=(940, 600), minimum=(880, 570))
+        center_dialog(self, parent, size=(940, 690), minimum=(880, 640))
         self.grab_set()
 
     @staticmethod
@@ -71,7 +71,12 @@ class AllocationDialog(tk.Toplevel):
         p = run.state.plans[self.mode]
         self.heading.configure(text=f'요청 #{self.request_id} · {run.mission["company_name"]} · {p["label"]}'
                                f'  |  GPU {p["gpu"]} / 전력 {p["power"]}\n'
-                               '서버별 배정과 잔여량 비교 · 수치는 GPU / 전력 순서입니다.')
+                               '서버별 배정과 잔여량 비교 · 수치는 GPU / 전력 순서입니다.', wraplength=900)
+        if not self.migration:
+            # Chapter 2: 모드별 처리 시간·기한, 두 요청의 동시 실행 가능 여부를 판단 자료로 보여 줍니다.
+            briefing = self.session.chapter2_briefing_lines(run)
+            if briefing:
+                self.heading.configure(text=self.heading.cget('text')+'\n'+'\n'.join(briefing))
         if self.migration:
             current = ', '.join(f'{s.server_id} {s.gpu}/{s.power}' for s in self.source.slices) if self.source else '점유 없음'
             self.heading.configure(text=self.heading.cget('text')+f'\n현재 위치: {current} · 기존 수행/진행률/기한 유지 · 이전 준비 10분')
@@ -210,6 +215,14 @@ class AllocationDialog(tk.Toplevel):
                                          anchor='w', justify='left', wraplength=880)
             self.change_label.grid(row=2, columnspan=3, sticky='ew', pady=(4, 0))
         self.change_label.configure(text=self.change_text)
+        # Chapter 2: 이 안을 선택했을 때 다른 고객 요청의 배정 가능 여부를 현재 원장으로 보여 줍니다.
+        if not hasattr(self, 'impact_label'):
+            self.impact_label = tk.Label(self.notice.master, bg=BG, fg=CYAN, font=(FONT, 9),
+                                         anchor='w', justify='left', wraplength=880)
+            self.impact_label.grid(row=3, columnspan=3, sticky='ew', pady=(2, 0))
+        impacts = ([] if self.migration or not parts else
+                   self.session.allocation_impacts(self.session.runs[self.request_id], parts))
+        self.impact_label.configure(text=('이 안을 선택하면 → '+' / '.join(impacts)) if impacts else '')
 
     def draw_preview(self):
         if not hasattr(self, 'options'):

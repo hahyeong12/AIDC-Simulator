@@ -276,6 +276,28 @@ class ServerPanel(tk.Frame):
     def select_server(self,key):
         self.selected=key; self.refresh(); self.book.select(self.inspector_frame)
 
+    def tab_bounds(self, tab):
+        """탭 하나의 실제 영역을 Notebook 내부 좌표 (left, top, right, bottom)로 계산합니다."""
+        def on_tab(x, y):
+            try:
+                return self.book.index(f'@{x},{y}') == tab
+            except tk.TclError:
+                return False
+        xs = [x for x in range(self.book.winfo_width()) if on_tab(x, 10)]
+        if not xs:
+            return None
+        left, right = min(xs), max(xs)
+        ys = [y for y in range(40) if on_tab((left+right)//2, y)]
+        return (left, min(ys), right, max(ys)) if ys else None
+
+    def tutorial_rect(self, tab):
+        """튜토리얼 안내가 가리킬 탭의 화면 좌표 (x, y, 너비, 높이). 보이지 않으면 None."""
+        bounds = self.tab_bounds(tab)
+        if bounds is None:
+            return None
+        left, top, right, bottom = bounds
+        return (self.book.winfo_rootx()+left, self.book.winfo_rooty()+top, right-left+1, bottom-top+1)
+
     def set_tutorial_highlight(self, color, tab=1):
         """탭(0=Inspector, 1=배정 미리보기)의 바깥쪽만 표시하여 선택/배정 동작과 레이아웃을 유지합니다."""
         self.tutorial_tab_color, self.tutorial_tab_index = color, tab
@@ -284,19 +306,10 @@ class ServerPanel(tk.Frame):
         self.tutorial_tab_edges.clear()
         if color is None:
             return
-        def on_preview_tab(x, y):
-            try:
-                return self.book.index(f'@{x},{y}') == tab
-            except tk.TclError:
-                return False
-        xs = [x for x in range(self.book.winfo_width()) if on_preview_tab(x, 10)]
-        if not xs:
+        bounds = self.tab_bounds(tab)
+        if bounds is None:
             return
-        left, right = min(xs), max(xs)
-        ys = [y for y in range(40) if on_preview_tab((left+right)//2, y)]
-        if not ys:
-            return
-        top, bottom = min(ys), max(ys)
+        left, top, right, bottom = bounds
         for x, y, w, h in ((left, top, right-left+1, 2), (left, bottom-1, right-left+1, 2),
                             (left, top, 2, bottom-top+1), (right-1, top, 2, bottom-top+1)):
             edge = tk.Frame(self.book, bg=color, bd=0)

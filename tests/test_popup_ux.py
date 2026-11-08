@@ -386,10 +386,14 @@ class CardTests(unittest.TestCase):
 
     def test_hover_and_keyboard_select_cards(self):
         card = self.d.plan_cards[1]
+        # 실제 마우스가 카드 위에 있으면 setUp의 update()가 진짜 Enter를 처리해 hover 상태가 됩니다.
+        # 합성 이벤트만 쓰도록 hover를 먼저 해제하고, 실제 포인터 이벤트를 처리하는 update() 대신
+        # update_idletasks()를 사용해 OS 마우스 위치와 무관하게 만듭니다.
+        self.d.paint_cards()
         before = card.cget('bg')
-        card.event_generate('<Enter>'); self.root.update()
+        card.event_generate('<Enter>'); self.root.update_idletasks()
         self.assertNotEqual(card.cget('bg'), before)
-        card.event_generate('<Leave>'); self.root.update()
+        card.event_generate('<Leave>'); self.root.update_idletasks()
         self.assertEqual(card.cget('bg'), before)
         card.focus_force(); card.event_generate('<Return>'); self.root.update()
         self.assertEqual(self.d.selection.get(), 1)
