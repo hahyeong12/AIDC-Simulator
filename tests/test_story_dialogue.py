@@ -208,6 +208,10 @@ class DialogueGuiTests(unittest.TestCase):
         self.assertIs(self.root.grab_current(), d)
         self.assertFalse(self.app.story_window.winfo_exists())
         d.close_button.invoke(); self.root.update()
+        # 아무 계획도 확인하지 않고 닫으면 검토 완료 사건이 생기지 않습니다.
+        self.assertNotIn('allocation', self.app.session.story.dialogue_seen)
+        self.assertEqual(self.app.session.story.step, 'preview')
+        d = self.app.open_allocation_plans(); d.plan_buttons[0].invoke(); d.close_button.invoke(); self.root.update()
         self.assertIn('allocation', self.app.session.story.dialogue_seen)
         self.assertEqual(self.app.session.story.step, 'allocation')
         self.assertEqual(self.app.center.gpu_used, 0)

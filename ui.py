@@ -86,7 +86,7 @@ class TextDialog(tk.Toplevel):
 class MessageDialog(tk.Toplevel):
     """타이핑 완성과 페이지 이동을 다음 버튼 하나로 처리하는 업무 메신저."""
     def __init__(self, parent, company, country, steps, animate=True, message_kind='업무 메시지', confirm=None,
-                 history_hint='과거 내용은 운영실 [대화 기록]', summary=None):
+                 history_hint='과거 내용은 운영실 [대화 기록]', summary=None, availability=None):
         super().__init__(parent, bg=BG)
         self.title(f'AIDC LINK | {company} · {country}')
         self.geometry('760x470')
@@ -118,9 +118,10 @@ class MessageDialog(tk.Toplevel):
         self.bind('<Destroy>', self._cancel, add='+')
         self.render()
         if summary is not None:
-            self.add_request_summary(parent, summary)
+            self.add_request_summary(parent, summary, availability)
 
-    def add_request_summary(self, parent, summary):
+    def add_request_summary(self, parent, summary, availability=None):
+        """고객 주문서처럼 위에서 아래로 읽는 요청서. 값은 모두 실제 요청 데이터(summary)에서 옵니다."""
         from window_placement import center_dialog
         self.summary_values = dict(summary)
         # 기존 페이지/읽기 커서/동의 버튼은 그대로 두고 상단에 조건을 추가합니다.
@@ -129,19 +130,43 @@ class MessageDialog(tk.Toplevel):
                 widget.grid_configure(row=row+1)
         self.rowconfigure(2, weight=0)
         self.rowconfigure(3, weight=1)
-        self.summary_frame = tk.Frame(self, bg=PANEL, padx=10, pady=6,
-                                      highlightthickness=1, highlightbackground=BORDER)
-        self.summary_frame.grid(row=1, sticky='ew', padx=16, pady=(0, 6))
-        self.summary_frame.columnconfigure((1, 3), weight=1)
-        label(self.summary_frame, '원래 요청 조건', 10, CYAN, True).grid(row=0, columnspan=4, sticky='w', pady=(0, 3))
-        for i, (name, value) in enumerate(list(summary.items())[:8]):
-            col, row = (i % 2)*2, i//2+1
-            label(self.summary_frame, name, 9, MUTED).grid(row=row, column=col, sticky='nw', padx=(0, 7))
-            label(self.summary_frame, value, 9, TEXT, justify='left', wraplength=270).grid(row=row, column=col+1, sticky='nw', padx=(0, 10))
-        for row, (name, value) in enumerate(list(summary.items())[8:], 5):
-            label(self.summary_frame, name+'  '+value, 9, CYAN if name.startswith('동의한') else TEXT,
-                  justify='left', wraplength=790).grid(row=row, columnspan=4, sticky='w', pady=1)
-        center_dialog(self, parent, size=(880, 610), minimum=(740, 540))
+        frame = self.summary_frame = tk.Frame(self, bg=PANEL, padx=12, pady=7,
+                                              highlightthickness=1, highlightbackground=BORDER)
+        frame.grid(row=1, sticky='ew', padx=16, pady=(0, 6))
+        frame.columnconfigure((0, 1), weight=1, uniform='tiles')
+        get = summary.get
+        label(frame, '고객 요청서', 9, CYAN, True).grid(row=0, columnspan=2, sticky='w')
+        label(frame, f'{get("고객명", "")} · {get("국가", "")} · {get("작업 종류", "")}', 12, TEXT, True,
+              justify='left', wraplength=780, anchor='w').grid(row=1, columnspan=2, sticky='ew', pady=(0, 5))
+        available = dict(zip(('GPU 요구량', '전력 요구량'), availability or ()))
+        self.requirement_tiles = {}
+        for column, (name, unit) in enumerate((('GPU 요구량', '개'), ('전력 요구량', '단위'))):
+            tile = tk.Frame(frame, bg=RAISED, padx=12, pady=4, highlightthickness=2, highlightbackground=CYAN)
+            tile.grid(row=2, column=column, sticky='ew', padx=(0 if column == 0 else 5, 5 if column == 0 else 0))
+            label(tile, name, 10, MUTED, True).pack(anchor='w')
+            value = label(tile, get(name, '-'), 28, CYAN, True)
+            value.pack(side='left')
+            label(tile, ' '+unit if get(name, '-').isdigit() else '', 12, TEXT).pack(side='left', anchor='s', pady=(0, 6))
+            if name in available:
+                need = get(name, '')
+                enough = need.isdigit() and int(need) <= available[name]
+                note = label(tile, f'현재 가용 {available[name]}'+(' · 충분' if enough else ' · 부족'), 9,
+                             GREEN if enough else AMBER)
+                note.pack(side='right', anchor='s', pady=(0, 6))
+            self.requirement_tiles[name] = tile
+        line = tk.Frame(frame, bg=PANEL)
+        line.grid(row=3, columnspan=2, sticky='ew', pady=(6, 2))
+        for name in ('요청 운영 모드', '완료 기한'):
+            if name in summary:
+                label(line, name.replace('요청 ', ''), 10, MUTED).pack(side='left')
+                label(line, get(name), 13, AMBER if name == '완료 기한' else TEXT, True).pack(side='left', padx=(6, 22))
+        extra = [(n, v) for n, v in summary.items()
+                 if n not in ('고객명', '국가', '작업 종류', '요청 운영 모드', 'GPU 요구량', '전력 요구량', '완료 기한')]
+        for row, (name, value) in enumerate(extra, 4):
+            important = name.startswith(('동의한', '변경 제안'))
+            label(frame, f'{name}  {value}', 10 if important else 9, CYAN if name.startswith('동의한') else AMBER if important else TEXT,
+                  justify='left', wraplength=800, anchor='w').grid(row=row, columnspan=2, sticky='ew', pady=1)
+        center_dialog(self, parent, size=(880, 660), minimum=(740, 560))
     def _cancel(self, event=None):
         if event is not None and event.widget is not self:
             return

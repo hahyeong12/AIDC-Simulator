@@ -72,10 +72,17 @@ class TutorialGuiTests(unittest.TestCase):
         self.request(); self.app.arrival_open_button.invoke()
         self.app.message_window.destroy(); self.root.update(); self.close_guide()
 
-    def allocation(self):
+    def compare(self):
         self.preview()
         self.app.resources.book.select(self.app.resources.review_frame)
         self.root.update(); self.close_guide()
+        self.app.resources.compare_button.invoke(); self.root.update()
+        return self.app.allocation_window
+
+    def allocation(self):
+        d = self.compare()
+        d.plan_buttons[0].invoke(); self.root.update()
+        d.close_button.invoke(); self.root.update(); self.close_guide()
 
     def running(self):
         self.allocation(); self.app.action_buttons['start'].invoke(); self.close_guide()
@@ -140,15 +147,47 @@ class TutorialGuiTests(unittest.TestCase):
         self.assertEqual(self.app.center.gpu_used, 0)
 
     def test_compare_dialog_start_is_single_target_and_does_not_allocate_on_view(self):
-        self.preview(); self.app.resources.compare_button.invoke(); self.root.update()
+        self.preview()
+        self.assert_target('preview', self.app.resources)
+        self.app.resources.book.select(self.app.resources.review_frame); self.root.update(); self.close_guide()
+        # 탭을 연 뒤에는 탭이 아니라 실제 비교 버튼을 가리킵니다.
+        self.assert_target('compare', self.app.resources.compare_button)
+        self.assertFalse(self.app.session.story.preview_confirmed)
+        self.app.resources.compare_button.invoke(); self.root.update()
         d = self.app.allocation_window
+        # 비교 창을 열기만 했을 때는 창 안의 계획 선택 버튼 하나만 가리킵니다.
+        self.assert_target('plan', d.plan_buttons[0])
+        self.assertIs(d.plan_buttons[0].winfo_toplevel(), d)
+        self.assertFalse(self.app.session.story.preview_confirmed)
+        self.assertEqual(self.app.center.gpu_used, 0)
+        d.close_button.invoke(); self.root.update(); self.close_guide()
+        self.assertEqual(self.app.session.story.step, 'preview')
+        self.assert_target('compare', self.app.resources.compare_button)
+        self.app.resources.compare_button.invoke(); self.root.update()
+        d = self.app.allocation_window
+        d.plan_buttons[0].invoke(); self.root.update()
+        self.assertTrue(self.app.session.story.preview_confirmed)
         self.assert_target('allocation', d.start_button)
         self.assertEqual(self.app.center.gpu_used, 0)
-        self.assertFalse(self.app.story_window.winfo_exists())
         d.close_button.invoke(); self.root.update()
         self.assertIsNone(self.h.target)
         self.close_guide()
         self.assert_target('allocation', self.app.action_buttons['start'])
+
+    def test_auto_recommendation_needs_explicit_click_to_count_as_review(self):
+        d = self.compare()
+        self.assertEqual(d.selection.get(), -1)
+        self.assertFalse(self.app.session.story.preview_confirmed)
+        d.auto_button.invoke(); self.root.update()
+        self.assertTrue(self.app.session.story.preview_confirmed)
+
+    def test_inspector_tab_is_pointed_at_when_resources_step_is_on_preview_tab(self):
+        self.arrival(); self.app.network.select('A'); self.close_guide()
+        self.app.resources.show_preview(); self.root.update()
+        self.assert_target('inspector', self.app.resources)
+        self.assertEqual(len(self.app.resources.tutorial_tab_edges), 4)
+        self.app.resources.book.select(self.app.resources.inspector_frame); self.root.update()
+        self.assert_target('resources', self.app.resource_confirm_button)
 
     def test_start_button_recreated_by_refresh_rebinds_without_extra_timers(self):
         self.allocation()
@@ -171,7 +210,7 @@ class TutorialGuiTests(unittest.TestCase):
 
     def test_time_requires_work_and_operations_reopens_real_information(self):
         self.running()
-        self.assert_target('time', self.app.time_buttons[10])
+        self.assert_target('time', self.app.time_group)
         self.assertEqual(self.app.state.work_done, 0)
         self.app.time_buttons[10].invoke(); self.root.update()
         self.assertGreater(self.app.state.work_done, 0)
@@ -185,10 +224,48 @@ class TutorialGuiTests(unittest.TestCase):
         self.assertIn('서버별 잔여 자원', self.app.story_window.full_text)
         self.app.story_window.next_button.invoke(); self.root.update(); self.close_guide()
         self.assertTrue(self.app.session.story.operations_confirmed)
-        self.assert_target('work_complete', self.app.time_buttons[10])
+        self.assert_target('work_complete', self.app.time_group)
         self.app.time_buttons[60].invoke(); self.app.time_buttons[60].invoke(); self.root.update()
         self.assertTrue(self.app.session.story.chapter_completed)
         self.assertIsNone(self.h.timer); self.assertIsNone(self.h.target)
+
+    def _time_button_advances_step(self, minutes):
+        self.running()
+        self.assert_target('time', self.app.time_group)
+        self.assertEqual({b.master for b in self.app.time_buttons.values()}, {self.app.time_group})
+        self.assertEqual(self.app.state.work_done, 0)
+        self.app.time_buttons[minutes].invoke(); self.root.update(); self.close_guide()
+        story = self.app.session.story
+        self.assertGreater(self.app.state.work_done, 0)
+        self.assertIn('time', story.completed_steps)
+        self.assertEqual(self.errors, [])
+        return story
+
+    def test_plus_10_is_valid_time_action(self):
+        self.assertEqual(self._time_button_advances_step(10).step, 'operations')
+
+    def test_plus_30_is_valid_time_action(self):
+        self.assertEqual(self._time_button_advances_step(30).step, 'operations')
+
+    def test_plus_60_is_valid_time_action_even_if_job_finishes_at_once(self):
+        story = self._time_button_advances_step(60)
+        # 한 번에 끝나도 단계가 꼬이지 않고 실제 결과로 Chapter 완료까지 이어집니다.
+        self.assertEqual(story.step, 'operations')
+        for _ in range(4):
+            if self.app.state.phase == 'finished':
+                break
+            self.app.time_buttons[60].invoke(); self.root.update(); self.close_guide()
+        self.assertTrue(story.chapter_completed)
+        self.assertEqual(story.step, 'complete')
+        self.assertTrue(story.tutorial_completed)
+        self.assertIsNone(self.h.target)
+        self.assertEqual(self.errors, [])
+
+    def test_time_group_pointer_text_and_pointer_click_uses_real_button(self):
+        self.running()
+        self.assertIn('시간 버튼', self.h.pointer.cget('text'))
+        self.h.activate(); self.root.update()
+        self.assertGreater(self.app.state.work_done, 0)
 
     def test_manual_help_and_review_suspend_then_restore_same_target(self):
         self.arrival()
@@ -277,7 +354,11 @@ class TutorialGuiTests(unittest.TestCase):
         self.app.resource_confirm_button.invoke(); self.close_guide(); check_sizes()
         self.app.arrival_open_button.invoke(); self.app.message_window.destroy()
         self.root.update(); self.close_guide(); check_sizes()
+        check_sizes()
         self.app.resources.book.select(self.app.resources.review_frame)
+        self.root.update(); self.close_guide(); check_sizes()
+        self.app.resources.compare_button.invoke(); self.root.update(); check_sizes()
+        d = self.app.allocation_window; d.plan_buttons[0].invoke(); d.close_button.invoke()
         self.root.update(); self.close_guide(); check_sizes()
         self.app.action_buttons['start'].invoke(); self.close_guide(); check_sizes()
         self.app.time_buttons[10].invoke(); self.close_guide(); check_sizes()

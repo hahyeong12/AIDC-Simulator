@@ -33,15 +33,15 @@ GUIDES = {
     'request': ('AIDC LINK에서 Merlion AI의 작업 조건·완료 기한을 확인하세요.', [
         Dialogue('system', '새로운 고객 요청이 AIDC LINK에 도착했습니다.'),
         Dialogue('mentor', '마침 좋은 타이밍이네요. 싱가포르 Merlion AI에서 AI 학습 작업을 요청했어요. AIDC LINK의 [요청 확인]을 눌러 작업 조건과 기한을 직접 읽어 보시겠어요?')]),
-    'preview': ('배정 미리보기 또는 배정 계획 비교 창에서 계획을 검토하세요.', [
+    'preview': ('[배정 계획 비교·선택]을 열어 배정안 하나를 직접 선택해 검토하세요.', [
         Dialogue('mentor', '고객은 GPU 7개를 요청했지만 한 서버에는 최대 4개만 있습니다. 여러 서버의 GPU와 전력을 조합해야 합니다.'),
-        Dialogue('mentor', '오른쪽 [배정 미리보기] 탭을 열거나 [배정 계획 비교·선택]을 눌러 추천안과 대안을 확인해 보세요. 여기서는 아직 실제로 배정하지 않고 사용량과 잔여량을 비교합니다.')]),
+        Dialogue('mentor', '오른쪽 [배정 미리보기] 탭에서 [배정 계획 비교·선택]을 눌러 비교 창을 열고, 배정안 1(추천)을 포함한 계획 중 하나를 직접 선택해 확인해 보세요. 탭을 여는 것만으로는 검토가 아닙니다. 여기서는 아직 실제로 배정하지 않고 사용량과 잔여량을 비교합니다.')]),
     'allocation': ('검토한 배정 계획으로 실제 고객 작업을 시작하세요.', [
         Dialogue('mentor', '[배정하고 작업 시작] 또는 비교 창의 시작 버튼을 눌러 주세요. 자동 추천을 사용해도 됩니다. 원래 요청 조건이나 고객이 동의한 조건을 지켜야 합니다.'),
         Dialogue('system', '미리보기나 계획 선택만으로는 자원을 점유하지 않습니다. 실제 작업을 시작한 뒤 랙의 SG 코드와 점유 색상, 전력 사용량을 확인하세요.')]),
-    'time': ('+10분 버튼으로 실제 작업 진행률을 높이세요.', [
+    'time': ('시간 버튼(+10/+30/+60분) 중 하나로 실제 작업 진행률을 높이세요.', [
         Dialogue('mentor', '좋아요. 서버에 GPU가 배정됐네요. SG 코드와 밝은 청록색 모듈이 보이시죠? 지금은 싱가포르 고객이 해당 장비를 사용하고 있다는 뜻입니다.'),
-        Dialogue('mentor', '배정 직후 진행률 0%는 정상입니다. 아래 [+10분]을 눌러 실제 작업이 진행되는지 확인해 보세요.')]),
+        Dialogue('mentor', '배정 직후 진행률 0%는 정상입니다. 가상 시간을 진행해 볼까요? +10분은 상황을 자세히 확인할 때, +30분과 +60분은 작업 시간을 빠르게 진행할 때 사용합니다. 어느 버튼을 눌러도 괜찮습니다. 먼저 작업 진행률이 어떻게 변하는지 확인해 보세요.')]),
     'operations': ('예상 완료 시각·고객 기한·서버별 잔여 자원을 확인하세요.', [
         Dialogue('mentor', '작업량이 늘었네요. 진행률과 예상 완료 시각, 고객 기한을 함께 확인해 보세요. 서버별 남은 GPU와 전력도 중요합니다.'),
         Dialogue('mentor', '나중에는 여러 고객의 요청이나 네트워크 장애에도 대응하게 됩니다. 지금은 첫 업무에 집중하겠습니다. 아래 현재 운영 정보를 읽고 [운영 상태 확인]을 눌러 주세요.')]),
@@ -187,7 +187,8 @@ class StoryProgress:
         facts = (self.introduction_confirmed, self.selected_server == 'A', self.resources_confirmed,
                  self.request_read, self.preview_confirmed or (self.legacy_progress and started),
                  started, started and s.work_done > 0,
-                 self.operations_confirmed or self.legacy_tutorial_completed, succeeded, succeeded)
+                 self.operations_confirmed or self.legacy_tutorial_completed or succeeded, succeeded, succeeded)
+        # 시간을 크게 진행해 운영 확인 전에 정상 완료되면 완료 화면의 실제 결과가 운영 확인을 대신합니다.
         for index, key in enumerate(STEPS):
             if key in self.completed_steps:
                 continue

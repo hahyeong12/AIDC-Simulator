@@ -266,7 +266,8 @@ class ServerPanel(tk.Frame):
         self.compare_button.pack(fill='x',pady=(0,5))
         self.tutorial_tab_edges = []
         self.tutorial_tab_color = None
-        self.book.bind('<Configure>', lambda _: self.set_tutorial_highlight(self.tutorial_tab_color), add='+')
+        self.tutorial_tab_index = 1
+        self.book.bind('<Configure>', lambda _: self.set_tutorial_highlight(self.tutorial_tab_color, self.tutorial_tab_index), add='+')
         self.plan_text=tk.Text(review,bg='#0b1522',fg=TEXT,font=(FONT,9),height=5,width=1,wrap='word',bd=0)
         self.plan_text.pack(fill='both',expand=True)
         self.refresh()
@@ -275,9 +276,9 @@ class ServerPanel(tk.Frame):
     def select_server(self,key):
         self.selected=key; self.refresh(); self.book.select(self.inspector_frame)
 
-    def set_tutorial_highlight(self, color):
-        """탭의 바깥쪽만 표시하여 선택/배정 동작과 레이아웃을 유지합니다."""
-        self.tutorial_tab_color = color
+    def set_tutorial_highlight(self, color, tab=1):
+        """탭(0=Inspector, 1=배정 미리보기)의 바깥쪽만 표시하여 선택/배정 동작과 레이아웃을 유지합니다."""
+        self.tutorial_tab_color, self.tutorial_tab_index = color, tab
         for edge in self.tutorial_tab_edges:
             edge.destroy()
         self.tutorial_tab_edges.clear()
@@ -285,7 +286,7 @@ class ServerPanel(tk.Frame):
             return
         def on_preview_tab(x, y):
             try:
-                return self.book.index(f'@{x},{y}') == 1
+                return self.book.index(f'@{x},{y}') == tab
             except tk.TclError:
                 return False
         xs = [x for x in range(self.book.winfo_width()) if on_preview_tab(x, 10)]
@@ -300,7 +301,7 @@ class ServerPanel(tk.Frame):
                             (left, top, 2, bottom-top+1), (right-1, top, 2, bottom-top+1)):
             edge = tk.Frame(self.book, bg=color, bd=0)
             edge.place(x=x, y=y, width=w, height=h)
-            edge.bind('<Button-1>', lambda _: self.show_preview())
+            edge.bind('<Button-1>', lambda _, t=tab: self.book.select(self.inspector_frame if t == 0 else self.review_frame))
             self.tutorial_tab_edges.append(edge)
 
     def show_preview(self):

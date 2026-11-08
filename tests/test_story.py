@@ -361,6 +361,8 @@ class StoryGuiTests(unittest.TestCase):
         dismiss_story_popups(self.app, self.root)
         self.app.arrival_open_button.invoke(); self.root.update()
         self.app.message_window.destroy()
+        plans = self.app.open_allocation_plans(); plans.plan_buttons[0].invoke()
+        plans.close_button.invoke(); self.root.update()
         self.app.resources.show_preview(); self.root.update()
 
     def test_first_day_dialogue_identifies_teacher_and_can_be_reopened(self):

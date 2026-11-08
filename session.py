@@ -604,7 +604,7 @@ class GameSession:
         """고객 조건을 먼저 검사한 뒤 비교 가능한 최대 3개 안을 조회합니다."""
         preview = self.allocation_preview(run, key)
         p = run.state.plans.get(key)
-        return {**preview, 'options':self.servers.options(p['gpu'], p['power']) if preview['allowed'] else ()}
+        return {**preview, 'options':self.servers.distinct_options(p['gpu'], p['power']) if preview['allowed'] else ()}
 
     def allocation_summary(self, parts):
         return '\n'.join(f'Server {s.server_id}: GPU {s.gpu} / 전력 {s.power} → '

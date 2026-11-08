@@ -276,35 +276,54 @@ class PatchGuiTests(unittest.TestCase):
         self.root.update()
         return self.app.chapter_window
 
-    def test_preview_tab_records_real_observation_without_reservation(self):
+    def test_preview_tab_alone_never_records_plan_review(self):
         s = self.app.session
         s.confirm_story_arrival(); s.select_story_server('A'); s.confirm_story_resources()
         self.app.open_message(1); self.root.update()
         self.assertEqual(s.story.step, 'preview')
         self.app.resources.book.select(self.app.resources.review_frame); self.root.update()
-        self.assertTrue(s.story.preview_confirmed)
-        self.assertEqual(s.story.step, 'allocation')
+        self.assertFalse(s.story.preview_confirmed)
+        self.assertEqual(s.story.step, 'preview')
         self.assertEqual(s.servers.allocations, {})
 
-    def test_comparison_open_records_preview_without_starting(self):
+    def test_comparison_open_and_close_without_choice_does_not_record_review(self):
         s = self.app.session
         s.confirm_story_arrival(); s.select_story_server('A'); s.confirm_story_resources(); s.read_conversation(1)
         dialog = self.app.open_allocation_plans(); self.root.update()
-        self.assertEqual(s.story.step, 'allocation')
+        self.assertEqual(s.story.step, 'preview')
+        self.assertFalse(s.story.preview_confirmed)
         self.assertEqual(s.center.gpu_used, 0)
         dialog.close_button.invoke()
-        self.assertEqual(s.story.step, 'allocation')
+        self.assertEqual(s.story.step, 'preview')
+        self.assertFalse(s.story.preview_confirmed)
 
-    def test_preview_save_failure_destroys_comparison_without_advancing(self):
+    def test_choosing_recommended_or_alternative_plan_records_review_without_starting(self):
+        for index in (-1, 0, 1):
+            with self.subTest(choice=index):
+                s = self.app.session
+                s.story.preview_confirmed = False
+                s.confirm_story_arrival() if not s.story.introduction_confirmed else None
+                if s.story.selected_server != 'A':
+                    s.select_story_server('A'); s.confirm_story_resources(); s.read_conversation(1)
+                s.story.completed_steps = ['arrival', 'server', 'resources', 'request']; s.story.step = 'preview'
+                dialog = self.app.open_allocation_plans(); self.root.update()
+                (dialog.auto_button if index == -1 else dialog.plan_buttons[index]).invoke()
+                self.assertTrue(s.story.preview_confirmed)
+                self.assertEqual(s.story.step, 'allocation')
+                self.assertEqual(s.servers.allocations, {})
+                dialog.destroy(); self.root.update()
+
+    def test_preview_save_failure_keeps_comparison_open_without_advancing(self):
         s = self.app.session
         s.confirm_story_arrival(); s.select_story_server('A'); s.confirm_story_resources(); s.read_conversation(1)
+        dialog = self.app.open_allocation_plans(); self.root.update()
         with patch.object(self.app.db, 'save_runtime', side_effect=OSError('실패')):
             with patch('main.messagebox.showerror') as error:
-                self.assertIsNone(self.app.open_allocation_plans())
+                dialog.plan_buttons[0].invoke()
         error.assert_called_once()
         self.assertFalse(s.story.preview_confirmed)
         self.assertEqual(s.story.step, 'preview')
-        self.assertIsNone(self.root.grab_current())
+        self.assertTrue(dialog.winfo_exists())
 
     def test_operations_help_shows_live_estimate_deadline_and_server_residuals(self):
         prepare(self.app.session); self.app.session.choose_plan('performance')

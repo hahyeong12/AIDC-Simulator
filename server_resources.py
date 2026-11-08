@@ -127,6 +127,20 @@ class ServerPool:
         """기존 추천 순서의 서로 다른 배분 최대 3개. 슬롯 순열은 별도 안이 아닙니다."""
         return tuple(islice(self.plans(gpu, power), 3))
 
+    def distinct_options(self, gpu, power, limit=3):
+        """비교 창용 안. 서버별 GPU 배분이 같은 안은 하나로 묶어 의미 있는 차이만 최대 limit개 반환합니다.
+        첫 안은 기존 추천(`plan`)과 같고, 조회만 하므로 원장은 변경하지 않습니다."""
+        seen, result = set(), []
+        for parts in self.plans(gpu, power):
+            signature = tuple((s.server_id, s.gpu) for s in parts)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            result.append(parts)
+            if len(result) == limit:
+                break
+        return tuple(result)
+
     def validate_plan(self, parts, gpu, power):
         """사용자가 고른 고정 슬롯을 현재 원장과 대조하며 점유하지 않습니다."""
         if (not isinstance(parts, tuple) or not parts

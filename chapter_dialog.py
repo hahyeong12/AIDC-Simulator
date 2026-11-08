@@ -3,14 +3,14 @@ import tkinter as tk
 
 from ui import BG, PANEL, CYAN, MUTED, TEXT, ActionButton, label
 from story_portraits import draw_portrait
+from window_placement import center_dialog
 
 
 class ChapterCompleteDialog(tk.Toplevel):
     def __init__(self, parent, result, select_mode, start_free, status, review):
         super().__init__(parent, bg=BG)
         self.title('Chapter 1 완료 · 첫 출근')
-        self.geometry('760x530')
-        self.minsize(700, 510)
+        self.withdraw()
         self.transient(parent)
         self.columnconfigure(0, weight=1)
         self.result = result
@@ -46,3 +46,4 @@ class ChapterCompleteDialog(tk.Toplevel):
             button = ActionButton(buttons, text, command)
             button.grid(row=index//2, column=index%2, sticky='ew', padx=4, pady=4)
             self.buttons[key] = button
+        center_dialog(self, parent, size=(760, 560), minimum=(700, 510))

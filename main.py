@@ -1,4 +1,4 @@
-"""AIDC Simulator v0.9-1d: 첫 출근부터 업무 완료와 모드 전환까지."""
+"""AIDC Simulator v0.9-1e: 첫 출근부터 업무 완료와 모드 전환까지."""
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -24,7 +24,7 @@ class SimulatorApp:
     def __init__(self, root, db=None, db_factory=Database, story_slots=None, **session_options):
         self.root = root
         self.db_factory, self.closed, self.transitioning = db_factory, False, False
-        root.title('AIDC Simulator v0.9-1d | 울산 AI 데이터센터 관제실')
+        root.title('AIDC Simulator v0.9-1e | 울산 AI 데이터센터 관제실')
         root.geometry(f'{min(1280, root.winfo_screenwidth()-40)}x{min(680, root.winfo_screenheight()-100)}')
         root.minsize(1000, 650)
         root.configure(bg=BG)
@@ -104,7 +104,7 @@ class SimulatorApp:
         header.grid(row=0, sticky='ew')
         label(header, 'AIDC', 22, CYAN, True).pack(side='left')
         mode_label = '스토리 모드' if self.session.story else '자유 운영 모드'
-        label(header, f'ULSAN / v0.9-1d · {mode_label}', 10, bold=True).pack(side='left', padx=12)
+        label(header, f'ULSAN / v0.9-1e · {mode_label}', 10, bold=True).pack(side='left', padx=12)
         self.notice_var = tk.StringVar()
         self.notice_button = ActionButton(header, 'AIDC LINK', self.open_latest_message)
         self.notice_button.pack(side='right')
@@ -186,8 +186,11 @@ class SimulatorApp:
         tools.grid(row=4, sticky='ew', pady=(0, 5))
         label(tools, '가상 시간 진행', 10, CYAN, True).pack(side='left', padx=(0, 10))
         self.time_buttons = {}
+        # 교육에서는 세 시간 버튼을 하나의 대상으로 묶어 강조합니다.
+        self.time_group = tk.Frame(tools, bg=BG, highlightthickness=0)
+        self.time_group.pack(side='left')
         for minutes in (10, 30, 60):
-            b = ActionButton(tools, f'+{minutes}분', lambda m=minutes: self.advance_time(m))
+            b = ActionButton(self.time_group, f'+{minutes}분', lambda m=minutes: self.advance_time(m))
             b.pack(side='left', padx=(0, 6))
             self.time_buttons[minutes] = b
         ActionButton(tools, '대화 기록', self.show_conversation_history).pack(side='right', padx=(6, 0))
@@ -249,29 +252,40 @@ class SimulatorApp:
                        for w in (self.story_window, self.feedback_window, self.message_window, *self.story_reviews))):
             highlight.clear()
             return
-        step, widget = story.step, None
+        step, widget, key = story.step, None, story.step
         plan_window = self.allocation_window
         if plan_window is not None and plan_window.winfo_exists():
-            if (step == 'allocation' and not plan_window.migration
-                    and plan_window.start_button.cget('state') != 'disabled'):
+            # 팝업이 열려 있으면 팝업 안의 위젯만 대상으로 합니다. 부모 화면 버튼은 강조하지 않습니다.
+            if plan_window.migration:
+                pass
+            elif step == 'allocation' and plan_window.start_button.cget('state') != 'disabled':
                 widget = plan_window.start_button
+            elif step == 'preview' and plan_window.plan_buttons:
+                widget, key = plan_window.plan_buttons[0], 'plan'
         elif step == 'server':
             widget = self.network
         elif step == 'resources':
-            widget = (self.resource_confirm_button if self.resources.book.select() == str(self.resources.inspector_frame)
-                      else self.resources)
+            if self.resources.book.select() == str(self.resources.inspector_frame):
+                widget = self.resource_confirm_button
+            else:
+                widget, key = self.resources, 'inspector'
         elif step == 'request':
             widget = self.arrival_open_button if self.arrival_request_id == story.request_id else self.notice_button
         elif step == 'preview':
-            widget = self.resources
+            # 탭은 이동 수단일 뿐입니다. 탭이 열려 있으면 실제 비교 버튼을 가리킵니다.
+            if self.resources.book.select() == str(self.resources.review_frame):
+                if self.resources.compare_button.cget('state') != 'disabled':
+                    widget, key = self.resources.compare_button, 'compare'
+            else:
+                widget = self.resources
         elif step == 'allocation':
             allowed = self.session.allocation_preview(self.session.current, self.plan_var.get())['allowed']
             widget = self.action_buttons.get('start') if allowed else self.mode_buttons['performance']
         elif step in ('time', 'work_complete'):
-            widget = self.time_buttons[10]
+            widget = self.time_group
         elif step == 'operations':
             widget = self.action_buttons.get('operations')
-        highlight.show(step, widget)
+        highlight.show(key, widget)
 
     def tutorial_window_closed(self, event):
         if event.widget is self.story_window:
@@ -293,8 +307,8 @@ class SimulatorApp:
     def story_anchor(self, step):
         widget = {'server': self.network, 'resources': getattr(self, 'resource_confirm_button', self.resources),
                   'request': self.arrival_open_button, 'preview': self.resources,
-                  'allocation': self.action_frame, 'time': self.time_buttons[10],
-                  'operations': self.action_frame}.get(step, self.controls)
+                  'allocation': self.action_frame, 'time': self.time_group,
+                  'work_complete': self.time_group, 'operations': self.action_frame}.get(step, self.controls)
         if step == 'server' and 'A' in self.network.rack_bounds:
             x, y, right, bottom = self.network.rack_bounds['A']
             return self.network.winfo_rootx()+int(x), self.network.winfo_rooty()+int(y), int(right-x), int(bottom-y)
@@ -649,9 +663,7 @@ class SimulatorApp:
         if self.closed or self.transitioning:
             return
         story = self.session.story
-        if (story and not story.preview_confirmed and not story.tutorial_completed and story.request_read
-                and self.resources.book.select() == str(self.resources.review_frame)):
-            self._perform(lambda:self.session.inspect_story_preview(self.session.selected_id))
+        # 탭 이동은 검토가 아닙니다. 배정 검토는 비교 창에서 계획을 직접 고를 때만 확인합니다.
         self.update_tutorial_highlight()
 
     def show_story_review(self):
@@ -739,16 +751,25 @@ class SimulatorApp:
             self.feedback_window.destroy()
         self.allocation_window = self.build_popup(AllocationDialog,
             self.root, self.session, self.plan_var.get(),
-            lambda mode, parts: self._perform(lambda: self.session.choose_plan(mode, server_plan=parts)))
+            lambda mode, parts: self._perform(lambda: self.session.choose_plan(mode, server_plan=parts)),
+            on_review=self.review_allocation_plan if self.session.story else None,
+            on_reload=self.update_tutorial_highlight if self.session.story else None)
         if self.session.story and self.story_window is not None and self.story_window.winfo_exists():
             self.story_window.destroy()
-        if self.session.story and not self._perform(lambda:self.session.inspect_story_preview(self.session.selected_id)):
-            self.allocation_window.destroy()
-            return None
         if self.session.story:
             self.allocation_window.bind('<Destroy>', self.story_work_window_closed, add='+')
         self.update_tutorial_highlight()
         return self.allocation_window
+    def review_allocation_plan(self):
+        """비교 창에서 계획(추천안 포함)을 직접 고른 행동만 배정 검토로 확인합니다."""
+        window = self.allocation_window
+        if window is None or not window.winfo_exists() or window.migration:
+            return
+        rid = window.request_id
+        if self.session.selected_id == rid:
+            self._perform(lambda:self.session.inspect_story_preview(rid))
+            window.paint_cards()
+
     def open_migration_plans(self):
         if self.allocation_window is not None and self.allocation_window.winfo_exists():
             self.allocation_window.lift()
@@ -824,13 +845,17 @@ class SimulatorApp:
             confirm = ('고객 답변 확인', lambda count=len(run.proposals): self.review_alternative(rid, count))
         self.message_window = self.build_popup(MessageDialog, self.root, run.mission['company_name'], run.mission['country'], steps,
                                             message_kind='새 메시지' if was_unread else '확인한 메시지 · 현재 상태',
-                                            confirm=confirm, summary=request_summary(run))
+                                            confirm=confirm, summary=request_summary(run),
+                                            availability=self.available_for_request())
         if self.session.story:
             if self.story_window is not None and self.story_window.winfo_exists():
                 self.story_window.destroy()
             self.message_window.bind('<Destroy>', self.story_work_window_closed, add='+')
         self.update_tutorial_highlight()
         return self.message_window
+    def available_for_request(self):
+        gpu, power = self.session.servers.available()
+        return min(gpu, self.center.available_gpu()), min(power, self.center.available_power())
     def show_conversation_history(self):
         steps = self.session.conversation(self.session.selected_id, history=True)
         return TextDialog(self.root, 'AIDC LINK · 과거 대화 기록', '\n\n'.join(f'{s}\n{t}' for s,t in steps))
@@ -887,7 +912,7 @@ class ModeSelection:
         self.preferred_story = preferred_story
         self.starting = False
         root.protocol('WM_DELETE_WINDOW', root.destroy)
-        root.title('AIDC Simulator v0.9-1d | 모드 선택')
+        root.title('AIDC Simulator v0.9-1e | 모드 선택')
         if root.winfo_width() <= 1:
             root.geometry('1000x650')
         root.minsize(1000, 650)
@@ -935,7 +960,7 @@ class ModeSelection:
         self.story_buttons['continue'].pack(fill='x')
         self.story_buttons['back'] = ActionButton(self.story_panel, '돌아가기', self.show_modes)
         self.story_buttons['back'].pack(anchor='w', pady=(16, 0))
-        self.version_label = label(self.content, 'v0.9-1d · 현재 스토리는 Chapter 1까지 제공됩니다.', 10, MUTED)
+        self.version_label = label(self.content, 'v0.9-1e · 현재 스토리는 Chapter 1까지 제공됩니다.', 10, MUTED)
         self.version_label.pack(anchor='w', pady=(14, 0))
 
     def layout_content(self, event):

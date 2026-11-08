@@ -2,6 +2,8 @@
 import tkinter as tk
 
 GOLD, GOLD_DIM = '#ffe08a', '#d9ae54'
+TAB_KEYS = {'inspector': 0, 'preview': 1}
+POINTER_TEXT = {'time': '▼ 시간 버튼 중 하나를 클릭', 'work_complete': '▼ 시간 버튼 중 하나를 클릭'}
 
 
 class TutorialHighlight:
@@ -10,6 +12,7 @@ class TutorialHighlight:
         self.target = self.key = self.timer = None
         self.original = None
         self.target_binding = None
+        self.top = self.top_binding = None
         self.custom = False
         self.edges = []
         self.pointer = None
@@ -41,6 +44,12 @@ class TutorialHighlight:
         if self.pointer is not None:
             self.pointer.destroy()
             self.pointer = None
+        if self.top is not None and self.top_binding is not None:
+            try:
+                self.top.unbind('<Configure>', self.top_binding)
+            except tk.TclError:
+                pass
+        self.top = self.top_binding = None
         self.target = self.key = self.original = None
         self.target_binding = None
         self.custom = False
@@ -52,8 +61,12 @@ class TutorialHighlight:
         if widget is None or not widget.winfo_exists():
             return
         self.key, self.target, self.bright = key, widget, True
-        self.custom = key in ('server', 'preview') and hasattr(widget, 'set_tutorial_highlight')
+        self.custom = key in ('server', *TAB_KEYS) and hasattr(widget, 'set_tutorial_highlight')
         self.target_binding = widget.bind('<Destroy>', self._destroyed, add='+')
+        top = widget.winfo_toplevel()
+        if top is not self.root:
+            # 팝업 안의 대상은 팝업이 이동/크기 변경될 때 바로 다시 배치합니다.
+            self.top, self.top_binding = top, top.bind('<Configure>', lambda _: self.position_pointer(), add='+')
         if not self.custom:
             self.original = {name: widget.cget(name) for name in
                              ('highlightthickness', 'highlightbackground', 'highlightcolor')}
@@ -67,7 +80,7 @@ class TutorialHighlight:
                     edge.tutorial_side = (inset, thickness, side)
                     edge.bind('<Button-1>', lambda _: self.activate())
                     self.edges.append(edge)
-        self.pointer = tk.Label(widget.winfo_toplevel(), text='▼ 여기를 클릭', bg='#251f15', fg=GOLD,
+        self.pointer = tk.Label(widget.winfo_toplevel(), text=POINTER_TEXT.get(key, '▼ 여기를 클릭'), bg='#251f15', fg=GOLD,
                                 font=('Malgun Gothic', 9, 'bold'), padx=7, pady=2, cursor='hand2')
         self.pointer.bind('<Button-1>', lambda _: self.activate())
         self._paint()
@@ -77,8 +90,10 @@ class TutorialHighlight:
             return
         if self.key == 'preview':
             self.target.show_preview()
-        elif self.key == 'resources' and hasattr(self.target, 'book'):
+        elif self.key == 'inspector':
             self.target.book.select(self.target.inspector_frame)
+        elif self.key in ('time', 'work_complete'):
+            self.target.winfo_children()[0].invoke()  # 묶음의 첫 버튼(+10분)과 같은 실제 동작
         elif self.key == 'server':
             self.target.select('A')
         elif hasattr(self.target, 'invoke'):
@@ -118,7 +133,10 @@ class TutorialHighlight:
             return
         color = GOLD if self.bright else GOLD_DIM
         if self.custom:
-            self.target.set_tutorial_highlight(color)
+            if self.key in TAB_KEYS:
+                self.target.set_tutorial_highlight(color, TAB_KEYS[self.key])
+            else:
+                self.target.set_tutorial_highlight(color)
         else:
             self.target.configure(highlightbackground=color, highlightcolor=color)
             for index, edge in enumerate(self.edges):

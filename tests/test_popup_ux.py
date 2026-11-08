@@ -118,6 +118,7 @@ class PopupFlowTests(unittest.TestCase):
 
     def allocation(self):
         self.preview(); self.app.resources.show_preview(); self.dismiss()
+        d = self.app.open_allocation_plans(); d.plan_buttons[0].invoke(); d.close_button.invoke(); self.dismiss()
 
     def running(self):
         self.allocation(); self.app.action_buttons['start'].invoke(); self.dismiss()

@@ -9,23 +9,24 @@ from server_widgets import (BG, PANEL, EDGE, TEXT, MUTED, CYAN, RED, FONT,
 
 
 class AllocationDialog(tk.Toplevel):
-    def __init__(self, parent, session, mode, on_start, migration=False):
+    def __init__(self, parent, session, mode, on_start, migration=False, on_review=None, on_reload=None):
         super().__init__(parent)
         self.session, self.mode, self.on_start = session, mode, on_start
+        self.on_review, self.on_reload = on_review, on_reload
         self.request_id = session.selected_id
         self.migration = migration
-        self.title(('작업 이전 계획' if migration else '서버 배정 계획 비교')+' · v0.9-1d')
+        self.title(('작업 이전 계획' if migration else '서버 배정 계획 비교')+' · v0.9-1e')
         self.configure(bg=BG)
         self.transient(parent)
-        self.geometry('940x550')
-        self.minsize(880, 530)
+        self.geometry('940x590')
+        self.minsize(880, 560)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(3, weight=1)
         self.selection = tk.IntVar(value=-1)
         self.heading = tk.Label(self, bg=BG, fg=TEXT, font=(FONT, 11, 'bold'), anchor='w', justify='left')
         self.heading.grid(row=0, sticky='ew', padx=14, pady=(12, 4))
         self.auto_button = tk.Radiobutton(self, text='자동 추천 · 시작 시 현재 자원으로 다시 계산',
-                                         variable=self.selection, value=-1, command=self.draw_preview,
+                                         variable=self.selection, value=-1, command=self.user_select,
                                          bg=BG, fg=CYAN, selectcolor=PANEL, activebackground=BG,
                                          activeforeground=CYAN, font=(FONT, 10), anchor='w')
         self.auto_button.grid(row=1, sticky='ew', padx=12)
@@ -33,7 +34,7 @@ class AllocationDialog(tk.Toplevel):
             self.auto_button.grid_remove()
         self.cards = tk.Frame(self, bg=BG)
         self.cards.grid(row=2, sticky='ew', padx=12, pady=6)
-        self.canvas = tk.Canvas(self, bg=PANEL, height=135, highlightthickness=1, highlightbackground=EDGE)
+        self.canvas = tk.Canvas(self, bg=PANEL, height=110, highlightthickness=1, highlightbackground=EDGE)
         self.canvas.grid(row=3, sticky='nsew', padx=12)
         self.canvas.bind('<Configure>', lambda _: self.draw_preview())
         footer = tk.Frame(self, bg=BG)
@@ -50,7 +51,7 @@ class AllocationDialog(tk.Toplevel):
         self.close_button = self.button(footer, '닫기', self.destroy)
         self.close_button.grid(row=1, column=2)
         self.reload()
-        center_dialog(self, parent, size=(940, 570), minimum=(880, 540))
+        center_dialog(self, parent, size=(940, 600), minimum=(880, 570))
         self.grab_set()
 
     @staticmethod
@@ -90,9 +91,8 @@ class AllocationDialog(tk.Toplevel):
                             cursor='hand2', takefocus=True)
             self.plan_cards.append(card)
             card.grid(row=0, column=i, sticky='nsew', padx=3)
-            title = '추천안 직접 선택' if i == 0 else f'대안 {i}'
-            radio = tk.Radiobutton(card, text=title, variable=self.selection, value=i,
-                                   command=self.draw_preview, bg=PANEL, fg=CYAN, selectcolor=BG,
+            radio = tk.Radiobutton(card, text=self.plan_title(i), variable=self.selection, value=i,
+                                   command=self.user_select, bg=PANEL, fg=CYAN, selectcolor=BG,
                                    activebackground=PANEL, activeforeground=CYAN, font=(FONT, 10, 'bold'))
             radio.grid(row=0, columnspan=3, sticky='w')
             self.plan_buttons.append(radio)
@@ -109,11 +109,9 @@ class AllocationDialog(tk.Toplevel):
                     tk.Label(card, text=value, bg=PANEL, fg=TEXT if part else MUTED,
                              font=(FONT, 9)).grid(row=row, column=column, padx=4, pady=2)
             self.comparison_rows.append(rows)
-            left_g = sum(v['gpu_available'] for v in self.views)-p['gpu']
-            left_p = sum(v['power_available'] for v in self.views)-p['power']
-            caption = tk.Label(card, text=f'{len(parts)}개 서버 사용 · 전체 잔여 {left_g} / {left_p}\n배정 가능 (조회 시점)',
-                               bg=PANEL, fg=CYAN, font=(FONT, 9))
-            caption.grid(row=6, columnspan=3, pady=(5, 0))
+            caption = tk.Label(card, text=self.caption(i, parts), bg=PANEL, fg=CYAN, font=(FONT, 9),
+                               justify='left', anchor='w', wraplength=270)
+            caption.grid(row=6, columnspan=3, pady=(5, 0), sticky='w')
             self.card_captions.append(caption)
             for widget in (card, *card.winfo_children()):
                 # Radio의 기본 클릭/키보드 동작은 유지합니다.
@@ -127,17 +125,61 @@ class AllocationDialog(tk.Toplevel):
             card.bind('<Left>', lambda _, n=i: self.select_card((n-1) % len(self.options), focus=True))
             card.bind('<Right>', lambda _, n=i: self.select_card((n+1) % len(self.options), focus=True))
         self.auto_button.configure(state='normal' if self.options else 'disabled')
+        if self.options and not self.migration and len(self.options) == 1:
+            self.heading.configure(text=self.heading.cget('text')+'\n이 조건에서 의미 있게 구별되는 배정안은 하나뿐입니다.')
         self.start_button.configure(state='normal' if self.options else 'disabled')
         self.notice.configure(text=('선택은 자원을 점유하지 않습니다. 직접 선택한 안은 슬롯까지 그대로 적용하며, 시작 직전에 다시 검사합니다.'
                                     if self.options else '배정 불가 · '+result['reason']+' · 조건을 확인한 후 다시 조회해 주세요.'),
                               fg=MUTED if self.options else RED)
         self.draw_preview()
+        if self.on_reload is not None:
+            self.on_reload()
+
+    def plan_title(self, index):
+        name = '이전안' if self.migration else '배정안'
+        return f'{name} {index+1}'+(' (추천)' if index == 0 else '')
+
+    def caption(self, index, parts):
+        """실제 원장 수치로만 특징을 설명합니다. 성능/안정성 효과는 주장하지 않습니다."""
+        lefts = [{v['spec'].key:(v['gpu_available']-next((s.gpu for s in o if s.server_id == v['spec'].key), 0),
+                                 v['power_available']-next((s.power for s in o if s.server_id == v['spec'].key), 0))
+                  for v in self.views} for o in self.options]
+        total_g = sum(g for g, _ in lefts[index].values())
+        total_p = sum(p for _, p in lefts[index].values())
+        lines = [f'{len(parts)}개 서버 사용 · 전체 잔여 GPU {total_g} / 전력 {total_p}']
+        counts = [len(o) for o in self.options]
+        if len(set(counts)) > 1 and len(parts) == min(counts):
+            lines.append('특징: 사용 서버 수가 가장 적음')
+        elif len(set(counts)) > 1 and len(parts) == max(counts):
+            lines.append('특징: 여러 서버에 나누어 배정')
+        biggest = max(sorted(lefts[index].items()), key=lambda kv: kv[1][0])
+        lines.append(f'남는 GPU 최대: Server {biggest[0]} {biggest[1][0]}개')
+        if not self.migration:
+            if index == 0:
+                lines.append('자동 추천과 같은 배분')
+            else:
+                base = {s.server_id:s for s in self.options[0]}
+                diff = []
+                for server in SERVERS:
+                    new = next((s for s in parts if s.server_id == server.key), None)
+                    g = (new.gpu if new else 0)-(base[server.key].gpu if server.key in base else 0)
+                    if g:
+                        diff.append(f'{server.key} {g:+d}')
+                if diff:
+                    lines.append('추천안 대비 GPU: '+', '.join(diff))
+        return '\n'.join(lines)
+
+    def user_select(self):
+        """라디오/카드로 계획을 직접 고른 사용자 행동. 화면 갱신 뒤에만 검토 확인을 알립니다."""
+        self.draw_preview()
+        if self.on_review is not None and not self.migration:
+            self.on_review()
 
     def select_card(self, index, focus=False):
         self.selection.set(index)
         if focus:
             self.plan_cards[index].focus_set()
-        self.draw_preview()
+        self.user_select()
 
     def paint_cards(self, hover=None):
         for index, card in enumerate(self.plan_cards):
@@ -146,7 +188,7 @@ class AllocationDialog(tk.Toplevel):
             card.configure(bg=bg, highlightbackground='#ffe08a' if selected else '#91a7c1' if hover == index else EDGE)
             for widget in card.winfo_children():
                 widget.configure(bg=bg)
-            self.plan_buttons[index].configure(text=('추천안' if index == 0 else f'대안 {index}')+
+            self.plan_buttons[index].configure(text=self.plan_title(index)+
                                                 (' · 선택 중 ✓' if selected else ' · 클릭하여 선택'))
 
     def update_selection(self, parts):
