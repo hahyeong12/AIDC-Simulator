@@ -15,7 +15,7 @@ class AllocationDialog(tk.Toplevel):
         self.on_review, self.on_reload = on_review, on_reload
         self.request_id = session.selected_id
         self.migration = migration
-        self.title(('작업 이전 계획' if migration else '서버 배정 계획 비교')+' · v0.9-2a-2')
+        self.title(('작업 이전 계획' if migration else '서버 배정 계획 비교')+' · v0.9-2a-3')
         self.configure(bg=BG)
         self.transient(parent)
         self.geometry('940x680')

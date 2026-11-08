@@ -1,4 +1,4 @@
-"""AIDC Simulator v0.9-2a-2: 첫 출근부터 업무 완료와 모드 전환까지."""
+"""AIDC Simulator v0.9-2a-3: 첫 출근부터 업무 완료와 모드 전환까지."""
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -24,7 +24,7 @@ class SimulatorApp:
     def __init__(self, root, db=None, db_factory=Database, story_slots=None, **session_options):
         self.root = root
         self.db_factory, self.closed, self.transitioning = db_factory, False, False
-        root.title('AIDC Simulator v0.9-2a-2 | 울산 AI 데이터센터 관제실')
+        root.title('AIDC Simulator v0.9-2a-3 | 울산 AI 데이터센터 관제실')
         root.geometry(f'{min(1280, root.winfo_screenwidth()-40)}x{min(680, root.winfo_screenheight()-100)}')
         root.minsize(1000, 650)
         root.configure(bg=BG)
@@ -104,7 +104,7 @@ class SimulatorApp:
         header.grid(row=0, sticky='ew')
         label(header, 'AIDC', 22, CYAN, True).pack(side='left')
         mode_label = '스토리 모드' if self.session.story else '자유 운영 모드'
-        label(header, f'ULSAN / v0.9-2a-2 · {mode_label}', 10, bold=True).pack(side='left', padx=12)
+        label(header, f'ULSAN / v0.9-2a-3 · {mode_label}', 10, bold=True).pack(side='left', padx=12)
         self.notice_var = tk.StringVar()
         self.notice_button = ActionButton(header, 'AIDC LINK', self.open_latest_message)
         self.notice_button.pack(side='right')
@@ -208,6 +208,7 @@ class SimulatorApp:
             self.story_skip_button = ActionButton(self.story_bar, '튜토리얼 건너뛰기', self.skip_tutorial, accent=AMBER)
             self.story_skip_button.grid(row=0, column=2)
             self.story_complete_button = ActionButton(self.story_bar, 'Chapter 1 완료', self.show_chapter_complete)
+            self.story_retry_button = ActionButton(self.story_bar, '이번 시도 종료 · 재도전', self.confirm_retry_chapter2, accent=AMBER)
             self.resources.book.bind('<<NotebookTabChanged>>', self.on_story_preview, add='+')
             self.resource_confirm_button = tk.Button(
                 self.resources.inspector_frame, text='GPU·전력 정보 확인', bg=PANEL, fg=CYAN,
@@ -232,6 +233,10 @@ class SimulatorApp:
             self.story_objective.configure(text=f'{story.chapter_label} · ACTION · 현재 목표: {story.objective}')
             self.story_skip_button.configure(state='disabled' if story.tutorial_completed else 'normal')
             self.resource_confirm_button.configure(state='normal' if story.step == 'resources' else 'disabled')
+            if story.chapter2 is not None and self.session.chapter2_retry_available:
+                self.story_retry_button.grid(row=0, column=3, padx=(6, 0))
+            else:
+                self.story_retry_button.grid_remove()
             if story.chapter2 is not None:
                 # Chapter 2(연습 포함)에는 Chapter 1 건너뛰기가 없습니다. 완료한 뒤에는 결과 창을 다시 열 수 있습니다.
                 self.story_skip_button.grid_remove()
@@ -751,6 +756,14 @@ class SimulatorApp:
                 start_chapter2=self.begin_chapter2)
         return self.chapter_window
 
+    def confirm_retry_chapter2(self):
+        """플레이어가 직접 선택했을 때만 재도전합니다. 현재 슬롯과 진행 중인 작업은 그대로 저장됩니다."""
+        if messagebox.askyesno('이번 시도 종료 · 재도전',
+                               '지금 진행은 현재 슬롯에 그대로 저장하고, 새 슬롯에서 Chapter 2를 처음부터 다시 시작할까요?',
+                               parent=self.root):
+            return self.retry_chapter2()
+        return False
+
     def retry_chapter2(self):
         """현재 슬롯과 기록은 그대로 저장하고, 새 독립 슬롯에서 Chapter 2를 처음부터 시작합니다."""
         return self.return_to_modes('chapter2')
@@ -987,7 +1000,7 @@ class ModeSelection:
         self.preferred_story = preferred_story
         self.starting = False
         root.protocol('WM_DELETE_WINDOW', root.destroy)
-        root.title('AIDC Simulator v0.9-2a-2 | 모드 선택')
+        root.title('AIDC Simulator v0.9-2a-3 | 모드 선택')
         if root.winfo_width() <= 1:
             root.geometry('1000x650')
         root.minsize(1000, 650)
@@ -1039,7 +1052,7 @@ class ModeSelection:
         self.story_buttons['continue'].pack(fill='x')
         self.story_buttons['back'] = ActionButton(self.story_panel, '돌아가기', self.show_modes)
         self.story_buttons['back'].pack(anchor='w', pady=(16, 0))
-        self.version_label = label(self.content, 'v0.9-2a-2 · 현재 스토리는 Chapter 2까지 제공됩니다.', 10, MUTED)
+        self.version_label = label(self.content, 'v0.9-2a-3 · 현재 스토리는 Chapter 2까지 제공됩니다.', 10, MUTED)
         self.version_label.pack(anchor='w', pady=(14, 0))
 
     def layout_content(self, event):

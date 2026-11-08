@@ -23,7 +23,7 @@
 - 프로젝트명: AIDC Simulator
 - 기술: Python, Tkinter GUI, SQLite 데이터베이스
 - 목적: 가상의 울산 AI 데이터센터를 운영하는 미션 기반 시뮬레이션 게임
-- 현재 버전: v0.9-2a-2 Chapter 2 성공/실패 판정·실패 확정 즉시 선배 피드백·즉시 재도전·종합 평가. 비GUI 테스트 통과, 모든 Tk 테스트는 미실행
+- 현재 버전: v0.9-2a-3 Chapter 2 실패 피드백 시점 수정(예측과 통지 분리)·직접 선택하는 재도전. 비GUI 테스트 통과, 모든 Tk 테스트는 미실행
 - 라이선스: MIT License, Copyright (c) 2026 hahyeong12 (`LICENSE`)
 - `main.py`: 시작 모드 선택·기존 관제실·교육 안내 및 사용자 입력 처리. `SimulatorApp(root, db=...)`는 기존 자유 운영을 유지하고 `mode='story'`로 스토리를 선택합니다.
 - 모드/스토리 시작 메뉴는 최대 너비 860px의 공통 중앙 콘텐츠 영역을 사용합니다. 스토리 버튼은 새 스토리 시작/이어하기/돌아가기 메뉴를 열며 이 단계에서 DB를 열지 않습니다.
@@ -94,7 +94,7 @@
 - `tests/test_popup_ux.py`: STORY/ACTION/FEEDBACK·실제 화면 요소 대비·요청 버튼 읽음 회귀/이어하기·조건/동의 표·카드 전체/키보드/미리보기·부분 창 실패/타이머·세 해상도/최대화 32개 검증. `tests/capture_popup_ux.py`는 메모리 DB와 선택 Pillow로 실제 Tk 렌더링을 캡처하며 `artifacts/v0.9-1d`에 10개를 보관합니다.
 - `tests/test_v091e.py`: 구별되는 배정안·`배정안 N (추천)` 표시·고객 요청서 큰 요구량/세 해상도·Chapter 완료창 중앙 배치 9개 검증. 배정 검토는 비교 창에서 계획을 직접 선택해야 완료하며 탭/열기만으로는 완료하지 않습니다. 시간 교육은 +10/+30/+60분을 하나의 대상으로 묶습니다.
 - `tests/test_pointer_geometry.py`: 안내 문구 위치를 대상 사각형에서 계산하는 순수 함수 5개 검증(창 없음). 탭 안내는 `ServerPanel.tutorial_rect()`의 실제 탭 좌표를 사용합니다.
-- `chapter2.py`와 `tests/test_chapter2.py`: Chapter 2 진행(`Chapter2Progress`), 연습 슬롯(`StoryProgress.practice`, `GameSession(start_chapter=2)`), 전용 요청 조건(`game.SCENARIOS`·`GameState.scenario`, 자유 운영/Chapter 1에는 적용하지 않음), 판단 자료(`chapter2_briefing_lines`, `allocation_impacts`)와 결과 기록(`chapter2_result`), 성공/실패 판정(`chapter2_job_state`, 첫 실패는 `chapter2.failure`에 기록하고 `failure_seen`으로 한 번만 안내)과 종합 평가(`chapter2_evaluation`: 미처리·실패 0점의 평균) 51개 검증(창 없음). 스토리 JSON 선택 필드 `chapter2`/`practice`로 저장하며 기존 슬롯 기록은 변경하지 않습니다. 재도전은 항상 새 슬롯입니다. `tests/test_chapter2_gui.py`는 작성만 했고 미실행입니다.
+- `chapter2.py`와 `tests/test_chapter2.py`: Chapter 2 진행(`Chapter2Progress`), 연습 슬롯(`StoryProgress.practice`, `GameSession(start_chapter=2)`), 전용 요청 조건(`game.SCENARIOS`·`GameState.scenario`, 자유 운영/Chapter 1에는 적용하지 않음), 판단 자료(`chapter2_briefing_lines`, `allocation_impacts`)와 결과 기록(`chapter2_result`), 성공/실패 판정(`chapter2_job_state`의 `late_certain` 예측은 내부 판단일 뿐이며 `chapter2.failure`는 만료·거절·재처리 종료·기한 초과 완료에서만 기록하고 `failure_seen`으로 한 번만 안내, `chapter2_retry_available`은 시도한 대응이 있을 때만 직접 선택 재도전 제공)과 종합 평가(`chapter2_evaluation`: 미처리·실패 0점의 평균) 55개 검증(창 없음). 스토리 JSON 선택 필드 `chapter2`/`practice`로 저장하며 기존 슬롯 기록은 변경하지 않습니다. 재도전은 항상 새 슬롯입니다. `tests/test_chapter2_gui.py`는 작성만 했고 미실행입니다.
 - `tests/test_balance.py`: 고정 접수 일정·시드에서 전략 A/B/C 비교. `python -m tests.test_balance`로 수치 출력
 - `tests/`: 자동화 테스트
 - 테스트 명령: `python -m unittest discover -s tests -v`

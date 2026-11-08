@@ -468,7 +468,11 @@ class GameSession:
                   'mode': s.plans[s.plan]['label'] if s.plan else None,
                   'minutes': ((t.get('completed', self.minute + (s.remaining_minutes if s.allocated else 0)) - t['started'])
                               if t.get('started') is not None else None),
-                  'blocker': None, 'earliest_finish': None}
+                  'blocker': None, 'earliest_finish': None,
+                  # 실제로 시도한 대응만 기록합니다(대안 협의 결과, 요청 대기 선택 횟수).
+                  'tried': {'proposal': run.proposals[-1]['status'] if run.proposals else None,
+                            'wait_choices': sum(1 for e in self.db.get_request_events(run.request['id'])
+                                                if e['kind'] == 'decision' and '대기 · 자원 미점유' in e['message'])}}
         if reason in ('late_certain', 'expired') and not s.allocated and run.playthrough_id is None:
             bound = self._chapter2_start_bound(run) if reason == 'late_certain' else None
             if bound is not None:
@@ -485,15 +489,44 @@ class GameSession:
             record['other'] = {'country': other.mission['country'], 'state': self.chapter2_job_state(other)[0]}
         return record
 
-    def _detect_chapter2_failure(self, on_load=False):
-        """처음 확정된 실패를 한 번만 기록합니다. 기록은 이후 성공으로 바뀌지 않습니다."""
+    def _chapter2_hint(self, run):
+        """Chapter 2 요청의 배정 실패에는 원인만 짧게 알리고 다음에 확인할 일을 안내합니다. 실패를 선언하지 않습니다."""
+        story = self.story
+        if story and story.chapter2_active and run.request['id'] in story.chapter2.request_ids:
+            return ' 현재 가용 GPU 또는 전력이 부족해 이 요청을 배정할 수 없습니다. 다른 배정 계획이나 고객과의 조건 협의 가능성을 확인해 보세요.'
+        return ''
+
+    @property
+    def chapter2_retry_available(self):
+        """플레이어가 대응(대안 협의·요청 대기)을 시도했고 기한 내 완료가 불가능하다고 예측될 때, 또는 이미 실패가 확정됐을 때만
+        [이번 시도 종료·재도전]을 제공합니다. 이 선택지는 현재 슬롯과 요청을 변경하지 않습니다."""
         chapter2 = self.story.chapter2 if self.story else None
-        if chapter2 is None or chapter2.failure is not None:
+        if chapter2 is None or chapter2.completed:
+            return False
+        if chapter2.failure is not None:
+            return True
+        for rid in chapter2.request_ids:
+            run = self.runs[rid]
+            if (self.chapter2_job_state(run) == ('failed', 'late_certain') and not run.state.allocated
+                    and (run.proposals or run.request['status'] == 'waiting')):
+                return True
+        return False
+
+    def _detect_chapter2_failure(self, on_load=False):
+        """실제로 확정된 실패(만료·거절·재처리 종료·기한 초과 완료)만 한 번 기록합니다. 기한 내 완료 불가 예측은 내부 판단일 뿐
+        기록하지 않으며 선배 안내를 만들지 않습니다. 기록은 이후 성공으로 바뀌지 않습니다."""
+        chapter2 = self.story.chapter2 if self.story else None
+        if chapter2 is None:
+            return
+        if chapter2.failure is not None and chapter2.failure.get('reason') == 'late_certain':
+            # v0.9-2a-2가 예측만으로 기록한 실패는 확정 실패가 아니므로 현재 상태로 다시 판정합니다.
+            chapter2.failure, chapter2.failure_seen = None, False
+        if chapter2.failure is not None:
             return
         for rid in chapter2.request_ids:
             run = self.runs[rid]
             state, reason = self.chapter2_job_state(run)
-            if state == 'failed':
+            if state == 'failed' and reason != 'late_certain':
                 chapter2.failure = self._chapter2_failure_record(run, reason)
                 # 이전 버전에서 이미 끝난 저장은 새로 안내하지 않습니다(결과 화면에 실패가 표시됩니다).
                 chapter2.failure_seen = bool(on_load and chapter2.completed)
@@ -855,7 +888,7 @@ class GameSession:
             if needed > available:
                 shortage.append(f'{name} {needed-available}{"개" if name=="GPU" else "단위"}')
         if shortage:
-            raise ValueError('자원 부족: '+' / '.join(shortage)+'. 대기하거나 다른 작업 완료를 기다리세요.')
+            raise ValueError('자원 부족: '+' / '.join(shortage)+'. 대기하거나 다른 작업 완료를 기다리세요.'+self._chapter2_hint(run))
         if server_plan is None:
             parts = self.servers.plan(p['gpu'], p['power'])
         else:
@@ -865,7 +898,7 @@ class GameSession:
                 raise ValueError(f'선택한 배정안을 사용할 수 없습니다: {exc} 현재 자원으로 배정 계획을 다시 확인해 주세요.') from exc
             parts = server_plan
         if parts is None:
-            raise ValueError('서버별 GPU·전력의 동시 배정 조합이 성립하지 않습니다. 다른 작업 완료를 기다리세요.')
+            raise ValueError('서버별 GPU·전력의 동시 배정 조합이 성립하지 않습니다. 다른 작업 완료를 기다리세요.'+self._chapter2_hint(run))
         s.choose_plan(key)
         rng = random.Random(self.seed+self.roll_index)
         self.roll_index += 1

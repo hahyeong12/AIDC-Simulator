@@ -470,31 +470,189 @@ class DecisionRecordTests(unittest.TestCase):
 
 
 class FailureJudgementTests(unittest.TestCase):
-    """미션 성공/실패, 실패 확정 시점, 선배 피드백 사실, 종합 점수. 모두 실제 엔진 상태에서 계산합니다."""
-    def test_us_first_makes_japan_failure_certain_immediately_and_keeps_us_running(self):
-        s, jp, us = ready()
-        self.assertIsNone(s.story.chapter2.failure)
-        start(s, us, 'performance')
-        failure = s.story.chapter2.failure
-        self.assertEqual((failure['request_id'], failure['reason']), (jp, 'late_certain'))
-        self.assertEqual(failure['blocker']['country'], '미국')
-        self.assertEqual(failure['other']['state'], 'running')
-        self.assertTrue(s.chapter2_failure_pending)
-        self.assertEqual(s.chapter2_evaluation()['mission'], 'failed')
-        self.assertIsNone(s.chapter2_evaluation()['overall'])          # 진행 중인 점수는 확정하지 않음
-        self.assertFalse(s.story.chapter2.completed)
-        self.assertEqual(s.runs[us].state.phase, 'running')           # 미국 작업은 계속 진행
+    """v0.9-2a-3: 실패 예측(내부 판단)과 실패 확정(선배 안내)을 구분합니다. 확정은 실제로 철회·거절·만료·기한 초과 완료가 된 뒤입니다."""
 
-    def test_final_failure_score_is_average_with_zero_for_unprocessed_customer(self):
-        s, jp, us = ready(); start(s, us, 'performance'); finish_all(s)
+    def run_until_failure(self, s, limit=30):
+        for _ in range(limit):
+            if s.story.chapter2.failure is not None:
+                return
+            s.advance_time(10)
+        raise AssertionError('실패가 확정되지 않았습니다.')
+
+    def test_A_starting_us_high_performance_does_not_show_failure_feedback(self):
+        s, jp, us = ready()
+        start(s, us, 'performance')
+        self.assertIsNone(s.story.chapter2.failure)
+        self.assertFalse(s.chapter2_failure_pending)
+        # 일본 고객의 기한 내 완료가 어렵다는 예측은 내부 판단 자료로만 남습니다.
+        self.assertEqual(s.chapter2_job_state(s.runs[jp]), ('failed', 'late_certain'))
+        self.assertFalse(s.chapter2_retry_available)                  # 아직 아무 대응도 시도하지 않음
+        self.assertEqual(s.runs[jp].request['status'], 'new')
+        self.assertIsNone(s.runs[jp].playthrough_id)
+        self.assertFalse(s.story.chapter2.completed)
+        s.advance_time(10)                                            # 시간이 흘러도 예측만으로는 안내하지 않음
+        self.assertFalse(s.chapter2_failure_pending)
+
+    def test_B_failed_japan_allocation_explains_cause_only_and_keeps_request_alive(self):
+        s, jp, us = ready(); start(s, us, 'performance')
+        before = gameplay(s)
+        with self.assertRaises(ValueError) as caught:
+            start(s, jp, 'performance')
+        message = str(caught.exception)
+        self.assertIn('GPU 또는 전력이 부족', message)
+        self.assertIn('조건 협의', message)
+        self.assertNotIn('실패', message)
+        self.assertEqual(gameplay(s), before)
+        self.assertEqual(s.runs[jp].request['status'], 'new')
+        self.assertIsNone(s.story.chapter2.failure)
+        self.assertFalse(s.chapter2_failure_pending)
+        self.assertFalse(s.story.chapter2.completed)
+        # 같은 안내는 Chapter 2 요청에만 붙고 자유 운영 메시지는 바뀌지 않습니다.
+        free = GameSession(Database(':memory:'), seed=9)
+        with patch.object(free, 'allocation_preview', return_value={'allowed': True, 'slices': None}):
+            self.assertEqual(free._chapter2_hint(free.current), '')
+
+    def test_C_japan_alternative_can_be_proposed_and_the_customer_answer_is_checked(self):
+        s, jp, us = ready(); start(s, us, 'performance')
+        s.selected_id = jp
+        s.propose_alternative()
+        self.assertEqual(s.runs[jp].proposals[-1]['status'], 'pending')
+        self.assertFalse(s.review_alternative())                      # 고객은 기한을 넘기는 절약형을 거절
+        proposal = s.runs[jp].proposals[-1]
+        self.assertEqual(proposal['status'], 'rejected')
+        self.assertEqual(s.runs[jp].conditions['allowed_modes'], ['performance'])   # 고객 조건은 그대로
+        with self.assertRaises(ValueError):
+            s.choose_plan('economy')                                  # 동의 없는 변경은 불가
+        self.assertEqual(s.runs[jp].request['status'], 'new')         # 요청은 아직 살아 있음
+        self.assertIsNone(s.story.chapter2.failure)                   # 협의 거절만으로는 실패 확정이 아님
+        self.assertFalse(s.chapter2_failure_pending)
+        self.assertTrue(s.chapter2_retry_available)                   # 대응을 시도했으므로 직접 선택하는 재도전은 가능
+        self.assertEqual(s.runs[jp].request['status'], 'new')         # 재도전 가능 여부 확인이 요청을 바꾸지 않음
+
+    def test_D_feedback_appears_only_after_the_request_is_actually_lost(self):
+        s, jp, us = ready(); start(s, us, 'performance')
+        s.selected_id = jp; s.propose_alternative(); s.review_alternative()
+        s.advance_time(60)
+        self.assertIsNone(s.story.chapter2.failure)                    # 최종 배정 기한(80분) 전에는 확정되지 않음
+        self.run_until_failure(s)
+        failure = s.story.chapter2.failure
+        self.assertEqual((failure['request_id'], failure['reason']), (jp, 'expired'))
+        self.assertEqual(s.minute - 540, 80)
+        self.assertTrue(s.chapter2_failure_pending)
+        self.assertEqual(failure['tried']['proposal'], 'rejected')
+        self.assertEqual(failure['blocker']['country'], '미국')
+        from story import chapter2_failure_pages
+        text = '\n'.join(p.text for p in chapter2_failure_pages(failure))
+        self.assertIn('일본 고객의 요청이 결국 철회됐습니다', text)
+        self.assertIn('미국 고객의 고성능 모드 작업', text)
+        self.assertIn('절약형 대안을 협의했지만 고객이 거절했습니다', text)
+        self.assertIn('다른 방법도 검토했지만 이번에는 해결하지 못했습니다', text)
+        self.assertIn('정상적으로 진행되고 있지만', text)
+        self.assertIn('비교해 보세요', text)
+        # 시도하지 않은 행동은 시도했다고 말하지 않습니다.
+        s2, jp2, us2 = ready(); start(s2, us2, 'performance'); self.run_until_failure(s2)
+        text2 = '\n'.join(p.text for p in chapter2_failure_pages(s2.story.chapter2.failure))
+        self.assertNotIn('협의', text2)
+        self.assertNotIn('요청 대기', text2)
+        self.assertNotIn('다른 방법도 검토했지만', text2)
+
+    def test_D_player_reject_and_waiting_are_judged_from_real_choices(self):
+        s, jp, us = ready(); start(s, jp, 'performance')
+        s.selected_id = us; s.reject_request('현재 전력 공급 여유 부족')
+        self.assertEqual((s.story.chapter2.failure['request_id'], s.story.chapter2.failure['reason']), (us, 'rejected'))
+        self.assertTrue(s.chapter2_failure_pending)
+        s, jp, us = ready(); s.selected_id = jp; s.wait_request(); s.advance_time(30)
+        self.assertIsNone(s.story.chapter2.failure)                    # 아직 자원이 있어 시작할 수 있으니 확정이 아님
+        self.assertTrue(s.chapter2_retry_available)
+        self.run_until_failure(s, limit=40)
+        self.assertEqual(s.story.chapter2.failure['reason'], 'expired')
+        self.assertEqual(s.story.chapter2.failure['tried']['wait_choices'], 1)
+        from story import chapter2_failure_pages
+        text = '\n'.join(p.text for p in chapter2_failure_pages(s.story.chapter2.failure))
+        self.assertIn('요청 대기를 1회 선택했습니다', text)
+        self.assertNotIn('자원을 사용하는 동안', text)               # 선점 원인이 없으므로 쓰지 않음
+
+    def test_E_retry_is_available_right_after_final_failure_with_other_job_running(self):
+        s, jp, us = ready(); start(s, us, 'performance'); self.run_until_failure(s)
+        self.assertTrue(s.chapter2_retry_available)
+        self.assertEqual(s.runs[us].state.phase, 'running')
+        snapshot = deepcopy(gameplay(s)), s.db.conn.serialize()
+        new = GameSession(Database(':memory:'), mode='story', start_chapter=2, seed=9)
+        self.assertEqual((new.minute, new.center.gpu_used, len(new.runs), new.story.chapter_completed), (540, 0, 2, False))
+        self.assertIsNone(new.story.chapter2.failure)
+        self.assertEqual((deepcopy(gameplay(s)), s.db.conn.serialize()), snapshot)   # 기존 슬롯 보존
+
+    def test_F_other_customers_job_is_never_cancelled_or_changed_by_the_failure(self):
+        s, jp, us = ready(); start(s, us, 'performance')
+        allocation = s.servers.allocations[s.runs[us].playthrough_id]
+        self.run_until_failure(s)
+        run = s.runs[us]
+        self.assertEqual((run.state.phase, run.request['status']), ('running', 'operating'))
+        self.assertEqual(s.servers.allocations[run.playthrough_id], allocation)
+        self.assertTrue(ledger_matches_center(s))
+        finish_all(s)
+        result = s.chapter2_result()
+        self.assertEqual(result['jobs'][1]['score'], 100)              # 미국 점수는 그대로 보존
+        self.assertEqual((result['mission'], result['overall']), ('failed', 50))
+        self.assertEqual(result['jobs'][0]['score'], None)
+
+    def test_G_successful_strategies_never_produce_failure_feedback(self):
+        for name in ('eco', 'exact'):
+            s, jp, us = ready()
+            if name == 'eco':
+                start(s, jp, 'performance'); start(s, us, 'economy')
+            else:
+                start(s, jp, 'performance')
+            for step in range(40):
+                self.assertIsNone(s.story.chapter2.failure, (name, step))
+                self.assertFalse(s.chapter2_failure_pending)
+                self.assertFalse(s.chapter2_retry_available)
+                if s.story.chapter2.completed:
+                    break
+                if name == 'exact' and s.minute - 540 == 40:
+                    start(s, us, 'performance')
+                s.advance_time(10)
+            self.assertTrue(s.story.chapter2.completed)
+            self.assertEqual(s.chapter2_result()['mission'], 'success')
+            self.assertIsNone(s.story.chapter2.failure)
+
+    def test_H_failure_feedback_is_not_duplicated_after_save_and_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'story.db'
+            db = Database(path)
+            s = GameSession(db, mode='story', start_chapter=2, seed=9)
+            s.confirm_chapter2_briefing()
+            jp, us = s.story.chapter2.request_ids
+            start(s, us, 'performance')
+            s.close()
+            db = Database(path); mid = GameSession(db, mode='story')   # 확정 전에 이어하기: 안내 없음
+            self.assertFalse(mid.chapter2_failure_pending)
+            self.run_until_failure(mid)
+            mid.close()
+            db = Database(path); again = GameSession(db, mode='story')   # 확정 후 아직 보지 않음: 다시 안내
+            self.assertTrue(again.chapter2_failure_pending)
+            again.mark_chapter2_failure_seen(); again.mark_chapter2_failure_seen()
+            first = deepcopy(again.story.chapter2.failure)
+            again.advance_time(10)
+            again.close()
+            db = Database(path); resumed = GameSession(db, mode='story')
+            self.assertFalse(resumed.chapter2_failure_pending)
+            self.assertEqual(resumed.story.chapter2.failure, first)
+            finish_all(resumed)
+            self.assertFalse(resumed.chapter2_failure_pending)
+            self.assertEqual(resumed.story.chapter2.failure, first)
+            resumed.close()
+
+    def test_final_score_is_average_with_zero_for_unprocessed_customer(self):
+        s, jp, us = ready(); start(s, us, 'performance')
+        self.assertIsNone(s.chapter2_evaluation()['overall'])          # 진행 중 점수는 확정하지 않음
+        finish_all(s)
         evaluation = s.chapter2_evaluation()
         self.assertEqual([j['score'] for j in evaluation['jobs']], [0, 100])
         self.assertEqual(evaluation['overall'], 50)
         result = s.chapter2_result()
         self.assertEqual((result['mission'], result['overall']), ('failed', 50))
-        self.assertEqual(result['jobs'][0]['score'], None)             # 엔진 점수는 변경하지 않음(미처리)
-        self.assertEqual(result['jobs'][1]['score'], 100)
-        self.assertEqual(result['failure']['reason'], 'late_certain')  # 처음 확정된 실패 기록은 유지
+        self.assertEqual(result['failure']['reason'], 'expired')
 
     def test_success_requires_both_on_time_and_gives_average_score(self):
         s, jp, us = ready(); start(s, jp, 'performance'); start(s, us, 'economy'); finish_all(s)
@@ -505,12 +663,15 @@ class FailureJudgementTests(unittest.TestCase):
         start(s, us, 'performance'); finish_all(s)
         self.assertEqual((s.chapter2_result()['mission'], s.chapter2_result()['overall']), ('success', 100))
 
-    def test_late_completion_is_a_mission_failure_but_keeps_the_real_customer_score(self):
+    def test_late_completion_is_confirmed_when_it_happens_and_keeps_the_real_score(self):
         s, jp, us = ready(); start(s, jp, 'performance'); s.advance_time(60)
-        self.assertEqual(s.story.chapter2.failure['request_id'], us)   # 시작하기도 전에 기한 내 완료 불가 확정
-        self.assertEqual(s.story.chapter2.failure['reason'], 'late_certain')
-        self.assertIsNone(s.story.chapter2.failure['blocker'])          # 자원은 있었으므로 선점 탓으로 쓰지 않음
-        start(s, us, 'performance'); finish_all(s)
+        self.assertIsNone(s.story.chapter2.failure)                    # 예측만 있고 아직 확정이 아님
+        start(s, us, 'performance')
+        self.assertIsNone(s.story.chapter2.failure)
+        self.run_until_failure(s)
+        self.assertEqual((s.story.chapter2.failure['request_id'], s.story.chapter2.failure['reason']), (us, 'late'))
+        self.assertIsNone(s.story.chapter2.failure['blocker'])
+        finish_all(s)
         result = s.chapter2_result()
         self.assertEqual(result['mission'], 'failed')
         us_job = result['jobs'][1]
@@ -522,103 +683,28 @@ class FailureJudgementTests(unittest.TestCase):
     def test_resource_shortage_or_rejected_proposal_alone_is_not_a_final_failure(self):
         s, jp, us = ready()
         s.selected_id = jp; s.propose_alternative(); self.assertFalse(s.review_alternative())
-        self.assertIsNone(s.story.chapter2.failure)                    # 일본은 아직 고성능으로 시작할 수 있음
+        self.assertIsNone(s.story.chapter2.failure)
         start(s, jp, 'performance')
         with self.assertRaises(ValueError):
-            start(s, us, 'performance')                                 # 자원 부족 오류만으로는 실패가 아님
+            start(s, us, 'performance')
         self.assertIsNone(s.story.chapter2.failure)
         start(s, us, 'economy')
         self.assertIsNone(s.story.chapter2.failure)
 
-    def test_rejection_and_waiting_failures_are_judged_from_real_state(self):
-        s, jp, us = ready(); start(s, jp, 'performance')
-        s.selected_id = us; s.reject_request('현재 전력 공급 여유 부족')
-        self.assertEqual((s.story.chapter2.failure['request_id'], s.story.chapter2.failure['reason']), (us, 'rejected'))
-        s, jp, us = ready(); s.selected_id = jp; s.wait_request(); s.advance_time(10)
-        self.assertIsNone(s.story.chapter2.failure)                    # 아직 기한 내 시작 가능
-        s.advance_time(10)
-        self.assertEqual(s.story.chapter2.failure['reason'], 'late_certain')
-
-    def test_failure_pages_use_recorded_facts_and_do_not_blame_us_first_in_other_cases(self):
-        from story import chapter2_failure_pages
-        s, jp, us = ready(); start(s, us, 'performance')
-        text = '\n'.join(p.text for p in chapter2_failure_pages(s.story.chapter2.failure))
-        self.assertIn('일본 고객의', text)
-        self.assertIn('미국 고객의 고성능 모드 작업', text)
-        self.assertIn('두 고객의 요구 조건과 완료 기한', text)
-        self.assertIn('정상적으로 진행되고 있지만', text)
-        for case in ('wait', 'reject', 'late'):
-            s, jp, us = ready()
-            if case == 'wait':
-                s.selected_id = jp; s.wait_request(); s.advance_time(30)
-            elif case == 'reject':
-                start(s, jp, 'performance'); s.selected_id = us; s.reject_request('현재 GPU 자원 부족')
-            else:
-                start(s, jp, 'performance'); s.advance_time(60)
-            text = '\n'.join(p.text for p in chapter2_failure_pages(s.story.chapter2.failure))
-            with self.subTest(case=case):
-                self.assertNotIn('자원을 사용하는 동안', text)          # 선점 원인 문장은 실제 선점일 때만
-                self.assertNotIn('고성능 모드 작업(GPU 6', text)
-
-    def test_failure_feedback_is_shown_once_across_reload_continue_and_retry(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory)/'story.db'
-            db = Database(path)
-            s = GameSession(db, mode='story', start_chapter=2, seed=9)
-            s.confirm_chapter2_briefing()
-            jp, us = s.story.chapter2.request_ids
-            start(s, us, 'performance')
-            s.close()
-            db = Database(path); again = GameSession(db, mode='story')
-            self.assertTrue(again.chapter2_failure_pending)             # 아직 보지 않았으면 이어하기에서 다시 안내
-            again.mark_chapter2_failure_seen()
-            again.mark_chapter2_failure_seen()                           # 두 번 눌러도 한 번만 기록
-            first = deepcopy(again.story.chapter2.failure)
-            again.advance_time(30)                                       # 실패 후 남은 작업 계속 진행
-            self.assertFalse(again.chapter2_failure_pending)
-            again.close()
-            db = Database(path); resumed = GameSession(db, mode='story')
-            self.assertFalse(resumed.chapter2_failure_pending)
-            self.assertEqual(resumed.story.chapter2.failure, first)      # 판정은 바뀌지 않음
-            self.assertEqual(resumed.chapter2_evaluation()['mission'], 'failed')
-            finish_all(resumed)
-            self.assertFalse(resumed.chapter2_failure_pending)
-            self.assertEqual(resumed.story.chapter2.failure, first)
-            resumed.close()
-            # 즉시 재도전: 진행 중이던 슬롯과 별개로 새 슬롯이 처음 상태로 시작
-            with tempfile.TemporaryDirectory() as other:
-                fresh = GameSession(Database(Path(other)/'retry.db'), mode='story', start_chapter=2, seed=9)
-                self.assertEqual((fresh.minute, fresh.center.gpu_used, fresh.story.chapter2.failure), (540, 0, None))
-                self.assertFalse(fresh.story.chapter2.failure_seen)
-                fresh.close()
-            db = Database(path); old = GameSession(db, mode='story')
-            self.assertTrue(old.story.chapter2.completed)
-            old.close()
-
-    def test_retry_is_possible_while_other_job_still_runs_without_touching_it(self):
-        s, jp, us = ready(); start(s, us, 'performance')
-        self.assertTrue(s.chapter2_failure_pending)
-        snapshot = deepcopy(gameplay(s)), s.db.conn.serialize()
-        new = GameSession(Database(':memory:'), mode='story', start_chapter=2, seed=9)
-        self.assertEqual((new.minute, new.center.gpu_used, len(new.runs), new.story.chapter_completed), (540, 0, 2, False))
-        self.assertEqual((deepcopy(gameplay(s)), s.db.conn.serialize()), snapshot)
-        self.assertEqual(s.runs[us].state.phase, 'running')
-
     def test_failure_detection_rolls_back_with_a_failed_save(self):
-        s, jp, us = ready()
+        s, jp, us = ready(); start(s, jp, 'performance')
         before = deepcopy(s.story.payload()), gameplay(s)
+        s.selected_id = us
         with patch.object(s.db, 'save_simulation', side_effect=OSError('저장 실패')):
             with self.assertRaises(OSError):
-                start(s, us, 'performance')
+                s.reject_request('현재 GPU 자원 부족')
         self.assertIsNone(s.story.chapter2.failure)
+        self.assertEqual(s.runs[us].request['status'], 'new')
         self.assertEqual((s.story.payload(), gameplay(s)), before)
-        with patch.object(s.db, 'save_simulation', side_effect=OSError('저장 실패')):
-            with self.assertRaises(OSError):
-                s.advance_time(10)
-        self.assertEqual(s.minute, 540)
 
     def test_mark_seen_failure_save_keeps_feedback_pending(self):
-        s, jp, us = ready(); start(s, us, 'performance')
+        s, jp, us = ready(); start(s, jp, 'performance')
+        s.selected_id = us; s.reject_request('현재 전력 공급 여유 부족')
         with patch.object(s.db, 'save_simulation', side_effect=OSError('저장 실패')):
             with self.assertRaises(OSError):
                 s.mark_chapter2_failure_seen()
@@ -626,7 +712,7 @@ class FailureJudgementTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ready()[0].mark_chapter2_failure_seen()                      # 실패가 없으면 기록할 수 없음
 
-    def test_saves_from_v092a_and_v092a1_without_failure_fields_do_not_lose_the_failure(self):
+    def test_saves_from_earlier_versions_are_reread_without_losing_a_real_failure(self):
         for finished in (False, True):
             with self.subTest(finished=finished), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory)/'old.db'
@@ -640,15 +726,22 @@ class FailureJudgementTests(unittest.TestCase):
                 s.close()
                 db = Database(path)
                 saved = db.get_simulation()
-                saved['story']['chapter2'].pop('failure'); saved['story']['chapter2'].pop('failure_seen')   # 이전 형식
+                if finished:
+                    saved['story']['chapter2'].pop('failure'); saved['story']['chapter2'].pop('failure_seen')   # v0.9-2a 형식
+                else:
+                    # v0.9-2a-2는 예측만으로 실패를 기록했습니다. 확정이 아니므로 다시 판정합니다.
+                    saved['story']['chapter2']['failure'] = {'request_id': jp, 'reason': 'late_certain', 'minute': 540}
+                    saved['story']['chapter2']['failure_seen'] = False
                 db.save_simulation(saved)
                 db.close()
                 db = Database(path); old = GameSession(db, mode='story')
-                self.assertEqual(old.story.chapter2.failure['reason'] in ('late_certain', 'expired'), True)
-                self.assertEqual(old.chapter2_failure_pending, not finished)  # 끝난 저장은 새로 팝업하지 않고 결과 화면에 표시
-                self.assertEqual(old.chapter2_evaluation()['mission'], 'failed')
                 if finished:
+                    self.assertEqual(old.story.chapter2.failure['reason'], 'expired')
+                    self.assertFalse(old.chapter2_failure_pending)       # 끝난 저장은 결과 화면에만 표시
                     self.assertEqual(old.chapter2_result()['mission'], 'failed')
+                else:
+                    self.assertIsNone(old.story.chapter2.failure)
+                    self.assertFalse(old.chapter2_failure_pending)
                 old.close()
 
     def test_chapter_one_scores_and_free_mode_are_untouched(self):

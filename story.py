@@ -105,6 +105,16 @@ def chapter2_failure_pages(failure):
         pages.append(Dialogue('mentor', f'{who} 고객의 작업은 {failure["mode"]}로 접수 후 {failure["waited"]}분 뒤에 시작했고 처리에 {failure["minutes"]}분이 필요합니다.'))
     elif reason in ('expired', 'late_certain') and failure.get('waited') is None:
         pages.append(Dialogue('mentor', '자원을 쓸 수 있는 상황에서도 요청을 처리하지 않고 기다리는 동안 시간이 흘러 기한 안에 끝낼 수 없게 됐습니다.'))
+    tried = failure.get('tried') or {}
+    attempts = []
+    if tried.get('proposal'):
+        attempts.append(f'{who} 고객과 절약형 대안을 협의했지만 '
+                        + {'rejected': '고객이 거절했습니다.', 'accepted': '동의를 받고도 끝내 처리하지 못했습니다.',
+                           'pending': '고객의 답변을 확인하지 못했습니다.'}[tried['proposal']])
+    if tried.get('wait_choices'):
+        attempts.append(f'요청 대기를 {tried["wait_choices"]}회 선택했습니다.')
+    if attempts:
+        pages.append(Dialogue('mentor', ' '.join(attempts)+' 다른 방법도 검토했지만 이번에는 해결하지 못했습니다.'))
     other = failure.get('other')
     follow = ''
     if other and other.get('state') == 'running':
@@ -112,7 +122,7 @@ def chapter2_failure_pages(failure):
     elif other and other.get('state') == 'pending':
         follow = f'{other["country"]} 고객의 요청은 아직 남아 있지만, '
     pages.append(Dialogue('mentor', follow+'이번 미션의 목표는 두 고객의 요청을 모두 기한 내에 처리하는 것이었습니다. 이미 확정된 실패 판정은 바뀌지 않습니다.'))
-    pages.append(Dialogue('mentor', '다음에는 작업을 시작하기 전에 두 고객의 요구 조건과 완료 기한을 모두 살펴보세요. [Chapter 2 다시 도전]으로 바로 새로 시작할 수 있고, 지금 진행 중인 작업은 [기존 진행 계속 보기]로 이어서 확인할 수 있습니다.'))
+    pages.append(Dialogue('mentor', '다시 도전하면서 두 고객의 요구 조건과 완료 기한을 비교해 보세요. [Chapter 2 다시 도전]으로 바로 새로 시작할 수 있고, 지금 진행 중인 작업은 [기존 진행 계속 보기]로 이어서 확인할 수 있습니다.'))
     return pages
 
 

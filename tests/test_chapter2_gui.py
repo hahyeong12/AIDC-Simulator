@@ -136,14 +136,20 @@ class FailureFeedbackGuiTests(unittest.TestCase):
         self.app.session.confirm_chapter2_briefing()
         self.jp, self.us = self.app.session.story.chapter2.request_ids
 
-    def test_us_first_shows_mentor_failure_once_with_immediate_retry(self):
+    def test_us_first_does_not_show_failure_until_the_request_is_actually_lost(self):
         self.app.select_request(self.us)
         self.app.choose_plan('performance'); self.root.update()
+        self.assertFalse(self.app.story_window is not None and self.app.story_window.winfo_exists())
+        self.assertFalse(self.app.session.chapter2_failure_pending)
+        self.assertFalse(self.app.story_retry_button.winfo_ismapped())     # 아직 대응을 시도하지 않음
+        # 일본 요청을 직접 거절하면 그때 선배가 설명하고 재도전을 제안합니다.
+        self.app.select_request(self.jp)
+        self.app._perform(lambda: self.app.session.reject_request('현재 GPU 자원 부족')); self.root.update()
         window = self.app.story_window
         self.assertTrue(window.winfo_exists())
         self.assertIn('일본 고객', window.full_text)
         self.assertEqual(window.close_button.cget('text'), '기존 진행 계속 보기')
-        self.assertFalse(self.app.session.chapter2_failure_pending)    # 표시와 동시에 한 번만 기록
+        self.assertFalse(self.app.session.chapter2_failure_pending)
         window.destroy(); self.root.update()
         self.app.advance_time(10); self.root.update()
         self.assertFalse(self.app.story_window is not None and self.app.story_window.winfo_exists())
