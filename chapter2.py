@@ -11,8 +11,9 @@ EVENTS2 = tuple('c2_'+step for step in STEPS2) + ('c2_done',)
 CHAPTER2_COUNTRIES = ('일본', '미국')
 # 최종 실패로 확정된 이유: 기한 만료 미처리, 거절, 재처리 종료, 기한 초과 완료, 기한 내 완료가 불가능함이 확정됨
 FAILURE_REASONS = ('expired', 'rejected', 'failed', 'late', 'late_certain')
-# 요청 조건(GPU·전력·작업량·기한)은 game.SCENARIOS의 같은 이름을 사용합니다.
-CHAPTER2_SCENARIOS = {'일본': 'ch2_jp', '미국': 'ch2_us'}
+# 새로 시작하는 Chapter 2의 요청 조건(GPU·전력·작업량·기한)은 game.SCENARIOS의 같은 이름을 사용합니다.
+# 이미 접수된 요청은 저장된 scenario(예: v0.9-2a-3까지의 'ch2_us')를 그대로 사용하므로 기존 슬롯의 조건은 바뀌지 않습니다.
+CHAPTER2_SCENARIOS = {'일본': 'ch2_jp', '미국': 'ch2_us_v2'}
 
 
 def is_resolved(run):

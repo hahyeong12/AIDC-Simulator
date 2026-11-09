@@ -77,6 +77,8 @@ class Chapter2CompleteDialog(tk.Toplevel):
             lines.append(f'Chapter 2 종합 평가: {result["overall"]:g}/100 (두 고객 점수의 평균 · 미처리·실패 고객은 0점)')
         if not success and result.get('failure'):
             lines.append('실패 원인\n'+'\n'.join('· '+page.text for page in chapter2_failure_pages(result['failure'])[:-2]))
+        if success and result.get('highlights'):
+            lines.append('기한을 지킨 방법\n'+'\n'.join('· '+line for line in result['highlights']))
         for job in result['jobs']:
             deadline = '기한 내' if job['on_time'] is True else '기한 초과' if job['on_time'] is False else '기한 평가 없음'
             earned = f'미션 평가 {job["eval_score"]}점' if job.get('eval_score') is not None else '미션 평가 미확정'

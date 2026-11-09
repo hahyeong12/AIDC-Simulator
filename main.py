@@ -690,6 +690,11 @@ class SimulatorApp:
             info = (f'예상 완료: {game_time(self.session.minute+run.state.remaining_minutes)}\n'
                     + self.session.deadline_summary(run) + '\n\n서버별 잔여 자원\n' + remaining)
             pages.append(Dialogue('system', info).page())
+        if story.chapter2_active:
+            # Chapter 2: 두 고객의 조건을 현재 엔진 값으로 나란히 보여 줍니다. 정답이나 권장 순서는 없습니다.
+            comparison = self.session.chapter2_comparison_lines()
+            if comparison:
+                pages.append(Dialogue('system', '\n'.join(comparison)).page())
         self.story_window = self.build_popup(StoryDialogueDialog, self.root, pages, confirm=confirm)
         self.story_window.bind('<Destroy>', self.tutorial_window_closed, add='+')
         try:

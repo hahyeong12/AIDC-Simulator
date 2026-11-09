@@ -1,7 +1,8 @@
 """v0.9-2a-1: Chapter 2(여러 고객의 요청과 서버 배정). Tk 창을 만들지 않는 규칙/저장 검증.
 
-일본(GPU 4/전력 5·기한 50분·최종 배정 80분)과 미국(고성능 6/6·절약형 4/3·기한 140분)의 원래 고성능 요청은
-전력 합계 11로 동시에 실행할 수 없습니다. 결과는 아래 테스트가 실제 엔진을 돌려 확인하며 하드코딩하지 않습니다.
+일본(GPU 4/전력 5·처리 40분·기한 50분·최종 배정 80분)과 미국(v0.9-2a-4 `ch2_us_v2`: 고성능 6/6·70분,
+절약형 4/3·100분, 기한 100분·최종 배정 120분)의 원래 고성능 요청은 전력 합계 11로 동시에 실행할 수 없습니다.
+결과는 아래 테스트가 실제 엔진을 돌려 확인하며 하드코딩하지 않습니다. 이전 `ch2_us` 저장 호환은 test_chapter2_balance.py에서 검증합니다.
 """
 from copy import deepcopy
 from pathlib import Path
@@ -86,7 +87,7 @@ class ScenarioDataTests(unittest.TestCase):
         self.assertEqual(s.runs[us].conditions['allowed_modes'], ['performance', 'economy'])
         self.assertEqual(s.runs[jp].conditions['type'], 'fixed')
         self.assertEqual(s.runs[us].conditions['type'], 'flexible')
-        self.assertEqual({r.state.scenario for r in s.runs.values()}, {'ch2_jp', 'ch2_us'})
+        self.assertEqual({r.state.scenario for r in s.runs.values()}, {'ch2_jp', 'ch2_us_v2'})   # 새 시작은 v0.9-2a-4 조건
 
 
 class StartTests(unittest.TestCase):
@@ -309,33 +310,38 @@ class CompetitionTests(unittest.TestCase):
         s, jp, us = ready(); start(s, us, 'performance'); finish_all(s)
         outcomes['us_first'] = (summary(s, jp), summary(s, us))
         self.assertEqual(len({repr(v) for v in outcomes.values()}), 4)
-        # 정확히 맞춘 순차 실행이 기한을 모두 지키며 가장 높은 미국 점수를 받습니다.
+        # v0.9-2a-4: 일본이 끝난 시각(40분)에 정확히 맞춰도 미국 고성능(70분)은 기한(100분)을 10분 넘깁니다.
         exact_us = outcomes['exact'][1]
-        self.assertEqual((exact_us['late'], exact_us['mode']), (0, 'performance'))
-        self.assertGreater(exact_us['score'], outcomes['eco'][1]['score'])
-        self.assertGreater(outcomes['eco'][1]['score'], outcomes['overshoot'][1]['score'])
-        # 절약형은 기한(150분)에 딱 맞지만 고성능보다 낮은 보너스 점수를 받습니다.
+        self.assertEqual((exact_us['late'], exact_us['mode']), (10, 'performance'))
+        # 절약형 동시 실행은 기한(100분)에 딱 맞으며 늦은 고성능보다 높은 점수를 받습니다.
         self.assertEqual(outcomes['eco'][1]['late'], 0)
-        # 시작을 놓친 순차 실행은 기한을 넘깁니다.
-        self.assertGreater(outcomes['overshoot'][1]['late'], 0)
+        self.assertGreater(outcomes['eco'][1]['score'], exact_us['score'])
+        self.assertGreater(exact_us['score'], outcomes['overshoot'][1]['score'])
+        # 시작을 더 놓친 순차 실행은 더 크게 기한을 넘깁니다.
+        self.assertGreater(outcomes['overshoot'][1]['late'], exact_us['late'])
         # 미국을 먼저 시작하면 일본은 최종 배정 기한 안에 시작하지 못합니다.
         self.assertTrue(outcomes['us_first'][0]['expired'])
         self.assertIsNone(outcomes['us_first'][0]['started'])
 
     def test_D_good_judgement_completes_both_jobs_on_time(self):
+        # v0.9-2a-4: 순차 고성능은 미국 기한을 넘기므로, 두 요청을 비교해 바로 함께 배정해야 두 기한을 지킵니다.
         s, jp, us = ready()
         for rid in (jp, us):
             s.read_conversation(rid)
-        start(s, jp, 'performance')
-        while s.runs[jp].state.phase != 'finished':
-            s.advance_time(10)
-        start(s, us, 'performance')
+        start(s, jp, 'performance'); start(s, us, 'economy')
         finish_all(s)
         result = s.chapter2_result()
         self.assertTrue(all(j['succeeded'] and j['on_time'] is True for j in result['jobs']))
-        self.assertFalse(result['concurrent'])
+        self.assertTrue(result['concurrent'])
         self.assertEqual(s.servers.allocations, {})
         self.assertEqual((s.center.gpu_used, s.center.power_used), (0, 0))
+        # 같은 판단 없이 일본이 끝난 뒤 미국 고성능을 시작하면 실제로 기한을 넘깁니다.
+        s, jp, us = ready(); start(s, jp, 'performance')
+        while s.runs[jp].state.phase != 'finished':
+            s.advance_time(10)
+        start(s, us, 'performance'); finish_all(s)
+        self.assertEqual([j['on_time'] for j in s.chapter2_result()['jobs']], [True, False])
+        self.assertFalse(s.chapter2_result()['concurrent'])
 
     def test_D_concurrent_economy_path_also_completes_on_time_with_a_lower_score(self):
         s, jp, us = ready(); start(s, jp, 'performance'); start(s, us, 'economy'); finish_all(s)
@@ -404,7 +410,7 @@ class CompetitionTests(unittest.TestCase):
         s, jp, us = ready()
         lines = s.chapter2_briefing_lines(s.runs[us])
         self.assertTrue(any('고성능' in l and '기한 내' in l for l in lines))
-        self.assertTrue(any('절약형' in l and '150분' in l for l in lines))
+        self.assertTrue(any('절약형' in l and '100분' in l and '기한 내' in l for l in lines))
         jp_lines = s.chapter2_briefing_lines(s.runs[jp])
         self.assertFalse(any('절약형' in l for l in jp_lines if '처리' in l))   # 동의 없는 모드는 제시하지 않음
         start(s, jp, 'performance')
@@ -442,6 +448,9 @@ class DecisionRecordTests(unittest.TestCase):
         text = '\n'.join(s.chapter2_result()['decisions'])
         self.assertIn('먼저 배정한 고객: 미국', text)
         self.assertIn('최종 배정 기한', text)
+        # 미국 고성능(70분)은 일본 최종 배정 기한(80분) 전에 자원을 반환했으므로 그 사실대로 씁니다.
+        self.assertIn('자원을 반환했지만', text)
+        self.assertNotIn('에야 자원을 반환했습니다', text)
         self.assertIn('기한 만료 · 미처리', text)
         self.assertNotIn('요청 대기', text)
 
@@ -547,7 +556,9 @@ class FailureJudgementTests(unittest.TestCase):
         self.assertIn('미국 고객의 고성능 모드 작업', text)
         self.assertIn('절약형 대안을 협의했지만 고객이 거절했습니다', text)
         self.assertIn('다른 방법도 검토했지만 이번에는 해결하지 못했습니다', text)
-        self.assertIn('정상적으로 진행되고 있지만', text)
+        # 미국 고성능(70분)은 일본 철회(80분) 전에 이미 정상 완료했으므로 그 사실대로 안내합니다.
+        self.assertIn('기한 내에 정상 완료했지만', text)
+        self.assertNotIn('정상적으로 진행되고 있지만', text)
         self.assertIn('비교해 보세요', text)
         # 시도하지 않은 행동은 시도했다고 말하지 않습니다.
         s2, jp2, us2 = ready(); start(s2, us2, 'performance'); self.run_until_failure(s2)
@@ -573,7 +584,9 @@ class FailureJudgementTests(unittest.TestCase):
         self.assertNotIn('자원을 사용하는 동안', text)               # 선점 원인이 없으므로 쓰지 않음
 
     def test_E_retry_is_available_right_after_final_failure_with_other_job_running(self):
-        s, jp, us = ready(); start(s, us, 'performance'); self.run_until_failure(s)
+        # 미국 절약형(100분)이 진행 중일 때 일본 요청이 최종 배정 기한(80분)에 철회되는 실제 상황
+        s, jp, us = ready(); start(s, us, 'economy'); self.run_until_failure(s)
+        self.assertEqual(s.story.chapter2.failure['reason'], 'expired')
         self.assertTrue(s.chapter2_retry_available)
         self.assertEqual(s.runs[us].state.phase, 'running')
         snapshot = deepcopy(gameplay(s)), s.db.conn.serialize()
@@ -583,34 +596,42 @@ class FailureJudgementTests(unittest.TestCase):
         self.assertEqual((deepcopy(gameplay(s)), s.db.conn.serialize()), snapshot)   # 기존 슬롯 보존
 
     def test_F_other_customers_job_is_never_cancelled_or_changed_by_the_failure(self):
-        s, jp, us = ready(); start(s, us, 'performance')
+        s, jp, us = ready(); start(s, us, 'economy')
         allocation = s.servers.allocations[s.runs[us].playthrough_id]
         self.run_until_failure(s)
         run = s.runs[us]
         self.assertEqual((run.state.phase, run.request['status']), ('running', 'operating'))
         self.assertEqual(s.servers.allocations[run.playthrough_id], allocation)
         self.assertTrue(ledger_matches_center(s))
+        # 미국 절약형과 일본 고성능은 함께 배정할 수 있었으므로 '자원을 막은 작업'으로 쓰지 않습니다.
+        self.assertIsNone(s.story.chapter2.failure['blocker'])
         finish_all(s)
         result = s.chapter2_result()
-        self.assertEqual(result['jobs'][1]['score'], 100)              # 미국 점수는 그대로 보존
-        self.assertEqual((result['mission'], result['overall']), ('failed', 50))
+        us_score = s.runs[us].state.score
+        self.assertEqual(result['jobs'][1]['score'], us_score)          # 미국 점수는 그대로 보존(기존 공식)
+        self.assertEqual(result['jobs'][1]['on_time'], True)
+        self.assertEqual((result['mission'], result['overall']), ('failed', us_score / 2))
         self.assertEqual(result['jobs'][0]['score'], None)
 
     def test_G_successful_strategies_never_produce_failure_feedback(self):
-        for name in ('eco', 'exact'):
+        # v0.9-2a-4 성공 전략: 두 요청을 바로 함께 배정(순서 무관), 또는 미국 절약형 시작 후 10분 안에 일본 고성능 시작
+        for name in ('eco', 'us_first', 'jp_after_10'):
             s, jp, us = ready()
             if name == 'eco':
                 start(s, jp, 'performance'); start(s, us, 'economy')
             else:
-                start(s, jp, 'performance')
+                start(s, us, 'economy')
+                if name == 'us_first':
+                    start(s, jp, 'performance')
             for step in range(40):
                 self.assertIsNone(s.story.chapter2.failure, (name, step))
                 self.assertFalse(s.chapter2_failure_pending)
                 self.assertFalse(s.chapter2_retry_available)
+                self.assertNotEqual(s.chapter2_evaluation()['mission'], 'failed', (name, step))
                 if s.story.chapter2.completed:
                     break
-                if name == 'exact' and s.minute - 540 == 40:
-                    start(s, us, 'performance')
+                if name == 'jp_after_10' and s.minute - 540 == 10:
+                    start(s, jp, 'performance')
                 s.advance_time(10)
             self.assertTrue(s.story.chapter2.completed)
             self.assertEqual(s.chapter2_result()['mission'], 'success')
@@ -659,9 +680,13 @@ class FailureJudgementTests(unittest.TestCase):
         result = s.chapter2_result()
         self.assertEqual((result['mission'], result['failure']), ('success', None))
         self.assertEqual(result['overall'], (s.runs[jp].state.score + s.runs[us].state.score) / 2)
+        # v0.9-2a-4: 일본 완료 직후 미국 고성능을 시작하면 미국이 10분 늦어 미션은 실패, 종합 점수는 실제 점수의 평균
         s, jp, us = ready(); start(s, jp, 'performance'); s.advance_time(30); s.advance_time(10)
         start(s, us, 'performance'); finish_all(s)
-        self.assertEqual((s.chapter2_result()['mission'], s.chapter2_result()['overall']), ('success', 100))
+        result = s.chapter2_result()
+        self.assertEqual(result['mission'], 'failed')
+        self.assertEqual(result['overall'], (s.runs[jp].state.score + s.runs[us].state.score) / 2)
+        self.assertEqual(result['failure']['reason'], 'late')
 
     def test_late_completion_is_confirmed_when_it_happens_and_keeps_the_real_score(self):
         s, jp, us = ready(); start(s, jp, 'performance'); s.advance_time(60)

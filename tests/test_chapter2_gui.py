@@ -92,6 +92,10 @@ class PracticeAndRetryGuiTests(unittest.TestCase):
         self.assertIn('Chapter 2', app.story_objective.cget('text'))
         self.assertTrue(app.story_window.winfo_exists())      # 브리핑
         self.assertFalse(app.story_skip_button.winfo_ismapped())
+        # v0.9-2a-4: 브리핑 마지막 장에 두 고객 비교표(실제 엔진 값)가 붙습니다. 작성만 했으며 아직 실행하지 않았습니다.
+        texts = [text for _, text in app.story_window.steps]
+        self.assertIn('두 고객 요청 비교', texts[-1])
+        self.assertIn('서버별 남은 GPU/전력', texts[-1])
 
     def test_result_dialog_has_retry_and_retry_opens_a_new_practice_slot(self):
         app = self.selector.new_story(2); self.root.update()
@@ -109,6 +113,8 @@ class PracticeAndRetryGuiTests(unittest.TestCase):
         dialog = app.chapter_window
         self.assertIn('retry', dialog.buttons)
         self.assertIn('주요 운영 결정', dialog.full_text)
+        self.assertEqual(dialog.verdict.cget('text'), 'CHAPTER 2 SUCCESS')
+        self.assertIn('기한을 지킨 방법', dialog.full_text)      # v0.9-2a-4 성공 설명(작성만, 미실행)
         app.db_factory = lambda path: Database(':memory:')
         dialog.buttons['retry'].invoke(); self.root.update()
         fresh = self.selector.app if self.selector.app is not None else app.mode_selector.app

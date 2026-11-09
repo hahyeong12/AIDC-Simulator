@@ -90,15 +90,22 @@ REQUEST_WINDOWS = {
 }
 MODE_SPEEDS = {"performance": 1, "economy": .7}
 # Chapter 2 교육 시나리오 전용 요청 조건. scenario가 없는 요청(자유 운영/Chapter 1)은 위의 국가별 규칙을 그대로 씁니다.
-# 두 고객의 고성능 요구량 합계(GPU 10/전력 11)는 전력 10단위를 넘고, 일본의 최종 배정 기한(80분)은
-# 미국 고성능 작업(100분)이 끝나기 전이므로 요청 순서·운영 모드·대기 여부가 실제 결과를 바꿉니다.
+# 저장된 요청은 GameState.scenario 이름으로 이 표를 다시 읽으므로, 이미 쓰인 이름의 수치는 바꾸지 않습니다.
+# 새 조건은 새 이름으로 추가하고 chapter2.CHAPTER2_SCENARIOS에서 새 시작에만 연결합니다.
 SCENARIOS = {
     "ch2_jp": {"plans": {"performance": {"label": "고성능 모드", "gpu": 4, "power": 5, "network": 3, "bonus": 15},
                          "economy": {"label": "절약형 모드", "gpu": 2, "power": 3, "network": 2, "bonus": 5}},
                "work": 40, "window": ("긴급 · 로봇 추론", 10, 50, 80)},
+    # v0.9-2a-2~3 저장 호환용(작업 100·기한 150분). 일본 고성능 → 미국 고성능 순차 실행도 기한 안에 끝납니다.
     "ch2_us": {"plans": {"performance": {"label": "고성능 모드", "gpu": 6, "power": 6, "network": 6, "bonus": 15},
                          "economy": {"label": "절약형 모드", "gpu": 4, "power": 3, "network": 5, "bonus": 5}},
                "work": 100, "window": ("우선 · 데이터 분석", 40, 150, 240)},
+    # v0.9-2a-4: 작업 70 → 고성능 70분 / 절약형 100분, 완료 기한 100분, 최종 배정 기한 120분.
+    # 두 고객의 고성능 합계(전력 11)는 동시에 실행할 수 없고, 일본(40분) 뒤 미국 고성능은 110분에 끝나 기한을 넘깁니다.
+    # 일본 고성능(GPU 4/전력 5)과 미국 절약형(GPU 4/전력 3)을 바로 함께 배정할 때만 두 기한을 모두 지킬 수 있습니다.
+    "ch2_us_v2": {"plans": {"performance": {"label": "고성능 모드", "gpu": 6, "power": 6, "network": 6, "bonus": 15},
+                            "economy": {"label": "절약형 모드", "gpu": 4, "power": 3, "network": 5, "bonus": 5}},
+                  "work": 70, "window": ("우선 · 데이터 분석", 10, 100, 120)},
 }
 
 
@@ -178,7 +185,9 @@ class GameState:
     def estimate_minutes(self, plan_key):
         import math
         speed = MODE_SPEEDS[plan_key]
-        return max(0, math.ceil((self.work_total-self.work_done)/speed/10)*10) + self.recovery_left
+        # 42/0.7 = 60.00000000000001 같은 부동소수점 오차가 10분 구간 하나를 더 세지 않도록 반올림 후 올림합니다.
+        # 실제 진행(advance)은 10분마다 같은 속도를 더하므로 예상과 실제 완료 시각이 일치합니다.
+        return max(0, math.ceil(round((self.work_total-self.work_done)/speed, 6)/10)*10) + self.recovery_left
 
     def choose_plan(self, plan_key):
         if self.phase not in ("ready", "accepted"):

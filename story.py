@@ -61,11 +61,14 @@ GUIDES = {
 GUIDES2 = {
     'briefing': ('선배의 Chapter 2 브리핑을 읽고 확인하세요.', [
         Dialogue('mentor', '오늘은 고객 요청이 한꺼번에 들어왔습니다. 일본 고객은 로봇 추론 작업의 완료 기한이 촉박하고, 미국 고객은 데이터 분석을 위해 많은 GPU를 요구하고 있어요.'),
-        Dialogue('mentor', '이번에는 고객이 두 곳입니다. 작업을 시작하기 전에 두 고객의 GPU·전력 요구량과 기한을 모두 확인해 보세요.'),
+        Dialogue('mentor', '이번에는 고객이 두 곳입니다. 작업을 시작하기 전에 두 고객의 요청을 나란히 비교해 보세요. '
+                           '확인할 것은 고객별 GPU 요구량, 전력 요구량, 운영 모드별 예상 처리 시간, 완료 기한, '
+                           '고객이 허용하는 운영 모드, 그리고 지금 서버별로 남은 자원입니다. 마지막 장의 비교표는 현재 운영 시스템의 실제 값입니다.'),
         Dialogue('mentor', '두 작업을 모두 원래 조건대로 동시에 실행하기는 어려울 수 있습니다. 서버 자원은 한정되어 있고, 먼저 배정한 작업이 남는 자원을 줄이니까요.'),
         Dialogue('mentor', '어떤 작업을 먼저 처리할지, 서버 자원을 어떻게 남겨둘지 판단해 보세요. 정답은 알려 드리지 않을게요. 고객 동의 없이 원래 조건을 바꿀 수는 없습니다. 준비가 되면 브리핑을 확인하고 AIDC LINK에서 두 요청을 열어 보세요.')]),
     'requests': ('AIDC LINK에서 일본·미국 두 요청의 GPU·전력·완료 기한·모드별 처리 시간을 모두 읽으세요.', [
-        Dialogue('mentor', '두 요청서의 GPU와 전력 요구량, 완료 기한, 고객이 허용한 운영 모드, 모드별 처리 시간을 읽고 비교해 보세요. 절약형이 허용되는 고객이라도 처리 시간은 길어집니다.')]),
+        Dialogue('mentor', '두 요청서의 GPU와 전력 요구량, 완료 기한, 고객이 허용한 운영 모드, 모드별 처리 시간을 읽고 비교해 보세요. 절약형이 허용되는 고객이라도 처리 시간은 길어집니다.'),
+        Dialogue('mentor', '시간 버튼도 판단의 일부입니다. 결정을 미루는 동안에도 고객의 완료 기한은 다가옵니다.')]),
     'review': ('[배정 계획 비교·선택]에서 두 요청의 배정안을 각각 비교하고 선택해 보세요.', [
         Dialogue('mentor', '배정 계획 비교창에서 서버별 잔여량을 살펴보세요. 한 서버에 모으는 안과 여러 서버에 나누는 안은 남는 자원이 다릅니다.'),
         Dialogue('system', '비교창에는 모드별 완료 예상, 두 고객의 원래 요청을 동시에 실행할 수 있는지, 선택한 안이 다른 요청의 배정 가능 여부를 어떻게 바꾸는지가 현재 자원 기준으로 표시됩니다. 선택만으로는 자원을 점유하지 않습니다.')]),
@@ -98,9 +101,19 @@ def chapter2_failure_pages(failure):
     }[reason]
     pages = [Dialogue('mentor', first)]
     blocker = failure.get('blocker')
+    after = failure.get('after')
     if blocker and reason in ('expired', 'late_certain', 'late'):
-        pages.append(Dialogue('mentor', f'{blocker["country"]} 고객의 {blocker["mode"]} 작업(GPU {blocker["gpu"]}/전력 {blocker["power"]})이 '
-                              f'{blocker["until"]}까지 자원을 사용하는 동안 {who} 고객의 요청을 시작할 수 없었습니다.'))
+        text = (f'{blocker["country"]} 고객의 {blocker["mode"]} 작업(GPU {blocker["gpu"]}/전력 {blocker["power"]})을 배정하면서 '
+                f'{who} 고객의 작업에 필요한 자원이 부족해졌습니다.')
+        if blocker.get('placement'):
+            text += (f' 전체 남은 GPU·전력 숫자로는 충분했지만, 먼저 배정한 위치({blocker.get("servers")}) 때문에 '
+                     '서버별 GPU와 전력을 함께 묶을 수 없었습니다.')
+        text += f' 그 작업이 {blocker["until"]}까지 자원을 사용하는 동안 {who} 고객의 요청을 기한에 맞춰 시작할 수 없었습니다.'
+        pages.append(Dialogue('mentor', text))
+    elif after and reason == 'late' and failure.get('mode') and failure.get('waited') is not None:
+        pages.append(Dialogue('mentor', f'{after["country"]} 고객을 먼저 처리했지만({after["completed"]} 완료) {who} 고객도 '
+                              f'{failure["mode"]}로 실행하면서 완료 기한을 넘겼습니다. 접수 후 {failure["waited"]}분 뒤에 시작했고 '
+                              f'처리에 {failure["minutes"]}분이 걸렸습니다.'))
     elif reason in ('late', 'late_certain') and failure.get('mode') and failure.get('waited') is not None:
         pages.append(Dialogue('mentor', f'{who} 고객의 작업은 {failure["mode"]}로 접수 후 {failure["waited"]}분 뒤에 시작했고 처리에 {failure["minutes"]}분이 필요합니다.'))
     elif reason in ('expired', 'late_certain') and failure.get('waited') is None:
@@ -121,6 +134,8 @@ def chapter2_failure_pages(failure):
         follow = f'{other["country"]} 고객의 작업은 정상적으로 진행되고 있지만, '
     elif other and other.get('state') == 'pending':
         follow = f'{other["country"]} 고객의 요청은 아직 남아 있지만, '
+    elif other and other.get('state') == 'success':
+        follow = f'{other["country"]} 고객의 작업은 기한 내에 정상 완료했지만, '
     pages.append(Dialogue('mentor', follow+'이번 미션의 목표는 두 고객의 요청을 모두 기한 내에 처리하는 것이었습니다. 이미 확정된 실패 판정은 바뀌지 않습니다.'))
     pages.append(Dialogue('mentor', '다시 도전하면서 두 고객의 요구 조건과 완료 기한을 비교해 보세요. [Chapter 2 다시 도전]으로 바로 새로 시작할 수 있고, 지금 진행 중인 작업은 [기존 진행 계속 보기]로 이어서 확인할 수 있습니다.'))
     return pages

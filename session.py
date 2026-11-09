@@ -422,6 +422,50 @@ class GameSession:
                          + ('가능' if ok else '불가'))
         return lines
 
+    def chapter2_comparison_lines(self):
+        """두 고객의 요청 조건을 같은 기준으로 나란히 보여 주는 판단 자료(조회 전용).
+        GPU·전력·모드별 처리 시간·완료 기한·고객 허용 모드·서버별 남은 자원만 현재 엔진 값으로 계산하며,
+        처리 순서나 운영 모드의 정답·권장은 쓰지 않습니다."""
+        story = self.story
+        if not story or not story.chapter2_active:
+            return []
+        lines = [f'두 고객 요청 비교 · 현재 {self.time_label} 기준']
+        for rid in story.chapter2.request_ids:
+            run = self.runs[rid]
+            t, s = run.terms, run.state
+            lines.append(f'■ {run.mission["country"]} {run.mission["company_name"]}'
+                         + (f' · {t["priority"]}' if t.get('priority') else ''))
+            if s.allocated:
+                lines.append(f'  실행 중 · {s.plans[s.plan]["label"]} GPU {s.gpu_used}/전력 {s.power_used} · '
+                             f'남은 처리 {s.remaining_minutes}분 → 예상 완료 {game_time(self.minute+s.remaining_minutes)}')
+            elif run.request['status'] in ('new', 'review', 'waiting'):
+                for key, plan in s.plans.items():
+                    minutes = s.estimate_minutes(key)
+                    lines.append(f'  {plan["label"]}: GPU {plan["gpu"]}/전력 {plan["power"]} · 처리 {minutes}분'
+                                 f' · {self.mode_status(run, key)}')
+            else:
+                lines.append('  '+self._chapter2_outcome_label(run))
+            if t.get('due') is not None:
+                left = t['due'] - self.minute
+                lines.append(f'  완료 기한 {game_time(t["due"])} ('+(f'남은 {left}분' if left >= 0 else f'{-left}분 초과')+')'
+                             + (f' · 최종 배정 기한 {game_time(t["expires"])}'
+                                if not s.allocated and run.request['status'] in ('new', 'review', 'waiting') else ''))
+        parts = []
+        for spec in SERVERS:
+            if self.servers.hardware[spec.key].state != 'HEALTHY':
+                parts.append(f'{spec.key} 사용 불가')
+            else:
+                parts.append(f'{spec.key} {len(self.servers.free_slots(spec))}/{spec.power-self.servers.usage(spec.key)[1]}')
+        lines.append('서버별 남은 GPU/전력: '+' · '.join(parts))
+        return lines
+
+    def _chapter2_outcome_label(self, run):
+        state, reason = self.chapter2_job_state(run)
+        if state == 'success':
+            return '정상 완료 · 기한 내'
+        names = {'expired': '기한 만료 · 미처리', 'rejected': '거절', 'failed': '실패', 'late': '기한 초과 완료'}
+        return names.get(reason, '후속 조치 대기' if run.state.phase == 'finished' else '종료')
+
     # ---- Chapter 2 성공/실패 판정 ---------------------------------------------------------------
     def _chapter2_start_bound(self, run):
         """아직 시작하지 않은 요청이 가장 빨리 끝낼 수 있는 시각의 하한. 값은 현재 자원·진행 중 작업의 남은 시간에서 계산합니다."""
@@ -473,21 +517,68 @@ class GameSession:
                   'tried': {'proposal': run.proposals[-1]['status'] if run.proposals else None,
                             'wait_choices': sum(1 for e in self.db.get_request_events(run.request['id'])
                                                 if e['kind'] == 'decision' and '대기 · 자원 미점유' in e['message'])}}
-        if reason in ('late_certain', 'expired') and not s.allocated and run.playthrough_id is None:
-            bound = self._chapter2_start_bound(run) if reason == 'late_certain' else None
+        if reason == 'late_certain' and not s.allocated and run.playthrough_id is None:
+            bound = self._chapter2_start_bound(run)
             if bound is not None:
                 record['earliest_finish'] = game_time(bound[0])
-            holders = [r for r in self.runs.values() if r is not run and r.state.allocated]
-            if holders and (bound is None or not bound[3]):
-                holder = min(holders, key=lambda r: r.state.remaining_minutes)
-                plan = holder.state.plans[holder.state.plan]
-                record['blocker'] = {'country': holder.mission['country'], 'company': holder.mission['company_name'],
-                                     'mode': plan['label'], 'gpu': holder.state.gpu_used, 'power': holder.state.power_used,
-                                     'until': game_time(self.minute + holder.state.remaining_minutes)}
+        if reason in ('late_certain', 'expired', 'late'):
+            record['blocker'] = self._chapter2_blocker(run)
+            started = t.get('started')
+            if started is not None and record['blocker'] is None:
+                # 다른 고객의 작업이 끝난 뒤에 시작한 경우만 '먼저 처리한 고객'으로 기록합니다.
+                prior = [o for o in self._chapter2_others(run)
+                         if o.terms.get('started') is not None and o.terms.get('completed') is not None
+                         and not o.terms.get('expired') and o.terms['completed'] <= started]
+                if prior:
+                    first = max(prior, key=lambda o: o.terms['completed'])
+                    record['after'] = {'country': first.mission['country'], 'company': first.mission['company_name'],
+                                       'mode': first.state.plans[first.state.plan]['label'] if first.state.plan else None,
+                                       'completed': game_time(first.terms['completed'])}
         other = next((self.runs[rid] for rid in self.story.chapter2.request_ids if rid != run.request['id']), None)
         if other is not None:
             record['other'] = {'country': other.mission['country'], 'state': self.chapter2_job_state(other)[0]}
         return record
+
+    def _chapter2_others(self, run):
+        return [self.runs[rid] for rid in self.story.chapter2.request_ids if rid != run.request['id']]
+
+    def _chapter2_blocker(self, run):
+        """이 요청이 기한 안에 끝날 수 있는 마지막 시작 시각에 자원을 점유해 함께 배정할 수 없게 만든 다른 고객 작업.
+        저장된 시작/완료 시각과 실제 서버 배정 위치로만 판정하며(조회용 새 원장 사용), 그런 작업이 없으면 None입니다."""
+        t = run.terms
+        agreed = [key for key in run.state.plans if self.plan_agreed(run, key)]
+        if t.get('due') is None or t.get('received') is None or not agreed:
+            return None
+        fresh = GameState(center=DataCenter(), country=run.mission['country'], scenario=run.state.scenario)
+        latest = max(t['received'], t['due'] - min(fresh.estimate_minutes(key) for key in agreed))
+        for other in self._chapter2_others(run):
+            ot = other.terms
+            if ot.get('started') is None or ot['started'] > latest:
+                continue
+            end = ot.get('completed') if not ot.get('expired') else None
+            if end is not None and end <= latest:
+                continue
+            if not other.server_allocations:
+                continue
+            allocation = other.server_allocations[0]   # 처음 시작할 때 실제로 점유한 서버 위치
+            pool = ServerPool()
+            try:
+                pool.reserve(Allocation(allocation.playthrough_id, allocation.slices))
+            except ValueError:
+                continue
+            plans = [run.state.plans[key] for key in agreed]
+            if any(pool.plan(p['gpu'], p['power']) is not None for p in plans):
+                continue   # 함께 배정할 수 있는 허용 모드가 있었으므로 자원을 막은 작업이 아닙니다.
+            # 전체 GPU·전력 숫자로는 들어가지만 서버별 위치 때문에 결합할 수 없었던 경우를 구분합니다.
+            placement = any(allocation.gpu + p['gpu'] <= self.center.gpu_total and allocation.power + p['power'] <= self.center.power_total
+                            for p in plans)
+            plan = other.state.plans[other.state.plan] if other.state.plan else {'label': '배정'}
+            until = end if end is not None else (self.minute + other.state.remaining_minutes if other.state.allocated else self.minute)
+            return {'country': other.mission['country'], 'company': other.mission['company_name'],
+                    'mode': plan['label'], 'gpu': allocation.gpu, 'power': allocation.power,
+                    'until': game_time(until), 'placement': placement,
+                    'servers': ', '.join(f'{p.server_id} {p.gpu}/{p.power}' for p in allocation.slices)}
+        return None
 
     def _chapter2_hint(self, run):
         """Chapter 2 요청의 배정 실패에는 원인만 짧게 알리고 다음에 확인할 일을 안내합니다. 실패를 선언하지 않습니다."""
@@ -650,6 +741,11 @@ class GameSession:
                 if holder is not None:
                     decisions.append(f'{holder["country"]} {holder["company"]} 작업은 {game_time(holder["completed"])}에야 자원을 반환했습니다. '
                                      f'{job["country"]} 요청은 최종 배정 기한({game_time(job["expiry"])})까지 시작하지 못했습니다.')
+                released = next((o for o in jobs if o is not job and o['started'] is not None and o['completed'] is not None
+                                 and o['started'] <= job['completed'] and o['completed'] <= job['completed']), None)
+                if holder is None and released is not None:
+                    decisions.append(f'{released["country"]} {released["company"]} 작업은 {game_time(released["completed"])}에 자원을 반환했지만, '
+                                     f'{job["country"]} 요청은 최종 배정 기한({game_time(job["expiry"])})까지 시작하지 않았습니다.')
         statuses = {spec.key: (self.servers.hardware[spec.key].state if self.servers.hardware[spec.key].state != 'HEALTHY'
                                else 'ACTIVE' if any(part.server_id == spec.key for a in self.servers.allocations.values()
                                                     for part in a.slices) else 'IDLE') for spec in SERVERS}
@@ -658,7 +754,30 @@ class GameSession:
             job.update(eval_score=scored['score'], state=scored['state'], reason=scored['reason'])
         return {'jobs': jobs, 'concurrent': concurrent, 'servers': statuses, 'decisions': decisions,
                 'practice': bool(story.practice), 'mission': evaluation['mission'], 'overall': evaluation['overall'],
-                'failure': deepcopy(story.chapter2.failure)}
+                'failure': deepcopy(story.chapter2.failure),
+                'highlights': self._chapter2_success_lines(jobs, concurrent) if evaluation['mission'] == 'success' else []}
+
+    def _chapter2_success_lines(self, jobs, concurrent):
+        """성공했을 때 어떤 운영 모드·배정 위치·시간으로 기한을 지켰는지 저장된 기록만으로 설명합니다."""
+        lines = []
+        for job in jobs:
+            run = self.runs[job['request_id']]
+            t, s = run.terms, run.state
+            proposal = run.proposals[-1] if run.proposals else None
+            how = ('고객 동의를 받은 ' if proposal and proposal['status'] == 'accepted' and s.plan == proposal['proposed']['mode'] else
+                   '고객이 원래 요청한 ' if run.conditions and s.plan == run.conditions['requested_mode'] else
+                   '고객이 허용한 ' if run.conditions and s.plan in run.conditions['allowed_modes'] else '')
+            margin = t['due'] - t['completed']
+            lines.append(f'{job["country"]} {job["company"]}: {how}{job["mode"]}(GPU {job["gpu"]}/전력 {job["power"]} · '
+                         f'배정 {job["placement"]})로 {game_time(t["started"])}에 시작해 {game_time(t["completed"])}에 완료했습니다. '
+                         + (f'완료 기한 {game_time(t["due"])}보다 {margin}분 먼저 끝냈습니다.' if margin else
+                            f'완료 기한 {game_time(t["due"])}에 맞춰 끝냈습니다.'))
+        if concurrent:
+            lines.append(f'두 작업을 동시에 실행하며 GPU {sum(j["gpu"] for j in jobs)}개와 전력 {sum(j["power"] for j in jobs)}단위를 '
+                         f'나누어 썼습니다(데이터센터 총 GPU {self.center.gpu_total}/전력 {self.center.power_total}).')
+        else:
+            lines.append('먼저 끝난 작업의 GPU와 전력이 반환된 뒤 다음 작업을 시작해 두 기한을 모두 지켰습니다.')
+        return lines
 
     def skip_tutorial(self):
         if self.story and not self.story.tutorial_completed:
