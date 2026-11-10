@@ -5,10 +5,11 @@ from copy import deepcopy
 import random
 
 from database import Database
-from game import DataCenter, GameState, RESPONSES, request_terms, request_conditions, game_time
+from game import DataCenter, GameState, RESPONSES, SCENARIOS, request_terms, request_conditions, game_time
 from server_resources import ServerPool, Allocation, SERVERS, ServerHealth
-from story import StoryProgress
-from result_summary import customer_reaction, outcome_key, job_summary, chapter1_summary, chapter2_summary
+from story import StoryProgress, chapter3_feedback_pages, chapter3_card
+from chapter3 import Chapter3Progress, CHAPTER3_COUNTRIES, CHAPTER3_SCENARIOS, KIND_LABELS, RESPONSE_LABELS, network_diagnosis
+from result_summary import customer_reaction, outcome_key, job_summary, chapter1_summary, chapter2_summary, chapter3_summary
 from chapter2 import Chapter2Progress, CHAPTER2_COUNTRIES, CHAPTER2_SCENARIOS, is_finished
 
 REQUEST_LABELS = {'new':'신규 요청','review':'검토 중','waiting':'대기',
@@ -48,8 +49,8 @@ class GameSession:
         saved = db.get_simulation()
         if mode not in ('free', 'story'):
             raise ValueError('존재하지 않는 게임 모드입니다.')
-        if start_chapter not in (1, 2) or (start_chapter == 2 and (mode != 'story' or saved)):
-            raise ValueError('Chapter 2 연습은 비어 있는 새 스토리 슬롯에서만 시작할 수 있습니다.')
+        if start_chapter not in (1, 2, 3) or (start_chapter in (2, 3) and (mode != 'story' or saved)):
+            raise ValueError('Chapter 2/3 연습은 비어 있는 새 스토리 슬롯에서만 시작할 수 있습니다.')
         if saved and saved.get('mode', 'free') != mode:
             raise ValueError('선택한 모드와 저장 파일이 다릅니다. 모드별 저장 파일을 사용해 주세요.')
         if mode == 'story' and not saved and db.get_requests():
@@ -59,7 +60,7 @@ class GameSession:
             raise ValueError('저장된 스토리 진행 기록을 찾을 수 없습니다.')
         self.story = None
         if mode == 'story' and not saved:
-            self.story = StoryProgress(practice=start_chapter == 2)
+            self.story = StoryProgress(practice=start_chapter in (2, 3), practice_chapter=3 if start_chapter == 3 else 2)
         self.minute = saved['minute'] if saved else 540
         self.seed = saved['seed'] if saved else (seed if seed is not None else random.SystemRandom().randrange(2**31))
         self.roll_index = saved['roll_index'] if saved else 0
@@ -83,6 +84,7 @@ class GameSession:
             raise ValueError('스토리의 첫 고객 요청을 찾을 수 없습니다.')
         if saved:
             self._validate_chapter2()
+            self._validate_chapter3()
         self._restore_servers()
         hardware = saved.get('server_health', {}) if saved else {}
         if not isinstance(hardware, dict) or set(hardware)-{s.key for s in SERVERS}:
@@ -239,6 +241,8 @@ class GameSession:
                 if self.story and self.story.chapter2 is not None:
                     self.story.chapter2.update(self.runs)
                     self._detect_chapter2_failure()
+                if self.story and self.story.chapter3 is not None:
+                    self._advance_chapter3()
                 self._persist()
         except Exception:
             self.runs.clear()
@@ -265,7 +269,7 @@ class GameSession:
                 self.story.dialogue_seen.append(event)
 
     def select_story_server(self, server_id):
-        if not self.story or self.story.tutorial_completed or self.story.chapter2 is not None:
+        if not self.story or self.story.tutorial_completed or self.story.chapter2 is not None or self.story.chapter3 is not None:
             return
         if server_id not in {s.key for s in SERVERS}:
             raise ValueError('존재하지 않는 서버입니다.')
@@ -329,7 +333,7 @@ class GameSession:
     def _validate_chapter2(self):
         chapter2 = self.story.chapter2 if self.story else None
         if chapter2 is None:
-            if self.story and self.story.practice:
+            if self.story and self.story.practice and self.story.practice_chapter == 2:
                 raise ValueError('Chapter 2 연습 슬롯의 고객 요청 기록이 없습니다.')
             return
         countries = []
@@ -786,6 +790,219 @@ class GameSession:
             lines.append('먼저 끝난 작업의 GPU와 전력이 반환된 뒤 다음 작업을 시작해 두 기한을 모두 지켰습니다.')
         return lines
 
+    # ---- Chapter 3: 네트워크 장애 진단과 대응 ------------------------------------------------------
+    def _validate_chapter3(self):
+        chapter3 = self.story.chapter3 if self.story else None
+        if chapter3 is None:
+            if self.story and self.story.practice and self.story.practice_chapter == 3:
+                raise ValueError('Chapter 3 연습 슬롯의 고객 요청 기록이 없습니다.')
+            return
+        for index, rid in enumerate(chapter3.request_ids):
+            run = self.runs.get(rid)
+            if run is None:
+                raise ValueError('Chapter 3의 고객 요청을 찾을 수 없습니다.')
+            if run.mission['country'] != CHAPTER3_COUNTRIES[index] or run.state.scenario != CHAPTER3_SCENARIOS[index]:
+                raise ValueError('Chapter 3의 고객 요청이 저장된 미션과 일치하지 않습니다.')
+
+    def chapter3_unlock_reason(self):
+        """Chapter 2를 성공으로 끝낸 스토리에서만 이어서 시작할 수 있습니다. 가능하면 빈 문자열, 아니면 이유."""
+        story = self.story
+        if not story or story.chapter2 is None or not story.chapter2.completed:
+            return 'Chapter 2를 완료한 뒤 Chapter 3을 시작할 수 있습니다.'
+        if story.chapter3 is not None:
+            return '이미 Chapter 3을 시작했습니다.'
+        if self.chapter2_evaluation()['mission'] != 'success':
+            return 'Chapter 2 미션을 성공해야 이어서 시작할 수 있습니다. [Chapter 3 새로 시작 · 연습]으로 독립 연습할 수 있습니다.'
+        return ''
+
+    def start_chapter3(self):
+        reason = self.chapter3_unlock_reason()
+        if reason:
+            raise ValueError(reason)
+        return self._open_chapter3()
+
+    def _open_chapter3(self):
+        """첫 번째 장애 미션(싱가포르) 요청만 접수합니다. 두 번째 요청은 첫 미션이 끝난 뒤 접수합니다."""
+        mid = next((mid for mid, m in self.missions.items() if m['country'] == CHAPTER3_COUNTRIES[0]), None)
+        if mid is None:
+            raise ValueError(f'{CHAPTER3_COUNTRIES[0]} 고객 미션을 찾을 수 없습니다.')
+        with self._atomic():
+            rid = self._receive(mid, f'chapter3:{mid}', CHAPTER3_SCENARIOS[0])
+            self.story.chapter3 = Chapter3Progress([rid])
+            self.selected_id = rid
+        return rid
+
+    def _advance_chapter3(self):
+        chapter3 = self.story.chapter3
+        self._record_chapter3()
+        chapter3.update(self.runs)
+        if len(chapter3.request_ids) == 1 and 'a_finish' in chapter3.completed_steps:
+            mid = next((mid for mid, m in self.missions.items() if m['country'] == CHAPTER3_COUNTRIES[1]), None)
+            if mid is None:
+                raise ValueError(f'{CHAPTER3_COUNTRIES[1]} 고객 미션을 찾을 수 없습니다.')
+            rid = self._receive(mid, f'chapter3:{mid}', CHAPTER3_SCENARIOS[1])
+            chapter3.request_ids.append(rid)
+            self.selected_id = rid
+            chapter3.update(self.runs)
+
+    def _record_chapter3(self):
+        """장애가 있었던 수행의 마지막 상태를 기록합니다. 재처리로 작업 상태가 새로 바뀌어도 장애/대응 기록은 남습니다."""
+        chapter3 = self.story.chapter3
+        for rid in chapter3.request_ids:
+            s = self.runs[rid].state
+            if not s.incident_kind:
+                continue
+            old = chapter3.records.get(str(rid), {})
+            chapter3.records[str(rid)] = {
+                'kind': s.incident_kind, 'responses': list(s.response_log), 'attempts': s.response_attempts,
+                'recovered_by': s.recovered_by, 'downtime': s.downtime, 'primary_up': s.primary_up,
+                'rerouted': s.rerouted, 'needed': s.network_needed, 'available': s.network_available,
+                'backup': s.backup_capacity, 'diagnosed': rid in chapter3.diagnosed,
+                'initial_needed': old.get('initial_needed', s.plans[s.plan]['network'] if s.plan else s.network_needed),
+                'final': 'failed' if s.phase == 'finished' and not s.succeeded else None}
+
+    def confirm_chapter3_briefing(self):
+        if not self.story or not self.story.chapter3_active or self.story.chapter3.step != 'briefing':
+            raise ValueError('현재는 Chapter 3 브리핑 단계가 아닙니다.')
+        with self._atomic():
+            self.story.chapter3.briefing_confirmed = True
+
+    def view_network_diagnosis(self, rid=None):
+        """실제로 진단창을 여는 행동. 처음 열 때만 확인 기록을 남기고 값은 현재 작업 상태에서 읽습니다."""
+        chapter3 = self.story.chapter3 if self.story else None
+        rid = self.selected_id if rid is None else rid
+        if chapter3 is None or rid not in chapter3.request_ids:
+            raise ValueError('Chapter 3 장애 요청에서만 네트워크 진단을 열 수 있습니다.')
+        run = self.runs[rid]
+        if not run.state.allocated or not run.state.incident_kind:
+            raise ValueError('지금은 진단할 네트워크 장애가 없습니다.')
+        diagnosis = network_diagnosis(run.state, self.hardware_status(run))
+        if rid not in chapter3.diagnosed:
+            with self._atomic():
+                chapter3.mark_diagnosed(rid)
+                # 해결한 뒤에도 이벤트 로그에서 진단 내용을 다시 볼 수 있습니다.
+                self._emit(run, 'diagnosis', f'네트워크 진단 확인: 주 경로 {diagnosis["primary"]} · 필요 {diagnosis["needed"]} / '
+                           f'가용 {diagnosis["available"]} · {diagnosis["backup"]} · 장비 {diagnosis["equipment"]}')
+        return diagnosis
+
+    def chapter3_pending_feedback(self):
+        """아직 보여 주지 않은 선배 피드백 하나: (키, 종류, 기록) 또는 None. 실제 대응/결과 기록에서만 만듭니다."""
+        chapter3 = self.story.chapter3 if self.story else None
+        if chapter3 is None:
+            return None
+        for rid in chapter3.request_ids:
+            record = chapter3.records.get(str(rid))
+            if not record:
+                continue
+            candidates = []
+            if record['final'] == 'failed':
+                candidates.append((f'{rid}:failed', 'failed'))
+            elif record['recovered_by']:
+                candidates.append((f'{rid}:recovered', 'recovered'))
+            elif record['attempts']:
+                candidates.append((f'{rid}:fail{record["attempts"]}', 'fail'))
+            for key, kind in candidates:
+                if key not in chapter3.feedback_seen:
+                    return key, kind, dict(record)
+        return None
+
+    def chapter3_feedback(self):
+        pending = self.chapter3_pending_feedback()
+        return None if pending is None else (pending[0], chapter3_feedback_pages(pending[1], pending[2]))
+
+    def chapter3_card(self, rid):
+        """장애 결과 카드와 다음 행동 가능 여부(조회 전용, 확인 기록을 남기지 않음). 닫았다가 다시 열 수 있습니다."""
+        chapter3 = self.story.chapter3 if self.story else None
+        record = chapter3.records.get(str(rid)) if chapter3 else None
+        if not record:
+            return None
+        run = self.runs[rid]
+        kind = ('failed' if record['final'] == 'failed' else 'recovered' if record['recovered_by']
+                else 'fail' if record['attempts'] else None)
+        if kind is None:
+            return None
+        s = run.state
+        card = chapter3_card(kind, record, closed=run.followup_closed)
+        if kind == 'recovered' and s.allocated:
+            # 장애 해결과 고객 작업 완료는 다른 사건입니다. 현재 작업 상태를 따로 보여 줍니다.
+            card['rows'] = card['rows'] + [('상태', f'복구 준비 중 · {s.recovery_left}분' if s.phase == 'recovering' and s.recovery_left
+                                          else '정상 실행 중')]
+        return {**card,
+                # 복구 준비가 실제로 남아 있을 때만 시간 진행 버튼을 제공합니다(진행은 기존 advance_time으로 처리).
+                'can_advance': kind == 'recovered' and s.phase == 'recovering' and s.recovery_left > 0,
+                'can_retry': kind == 'failed', 'request_id': rid}
+
+    def recovery_status_lines(self, run):
+        """Chapter 3 장애를 해결한 작업의 업무 패널 표시(조회 전용). 해당되지 않으면 빈 목록.
+        ② 복구 준비 중 → ③ 정상 실행 중으로 구분하며 고객 작업 완료와는 별개입니다."""
+        s = run.state
+        if not (s.incident_kind and s.recovered_by and s.allocated and s.phase in ('recovering', 'running')):
+            return []
+        head = f'{run.mission["company_name"]} | '
+        if s.phase == 'recovering':
+            return [head+'복구 준비 중', f'작업 진행률: {s.progress:.0f}%',
+                    f'네트워크 조치: 성공 ({RESPONSE_LABELS[s.recovered_by]})', f'복구 준비: {s.recovery_left}분 남음']
+        return [head+'정상 실행 중', f'작업 진행률: {s.progress:.0f}%', '네트워크: 정상']
+
+    def story_objective(self):
+        """현재 목표 문구. Chapter 3 장애 해결 뒤에는 복구 준비/정상 실행 상태에 맞는 목표를 보여 줍니다."""
+        story = self.story
+        chapter3 = story.chapter3 if story else None
+        if chapter3 is not None and chapter3.step in ('a_finish', 'b_finish') and len(chapter3.request_ids) > (chapter3.step == 'b_finish'):
+            run = self.runs[chapter3.request_ids[1 if chapter3.step == 'b_finish' else 0]]
+            s = run.state
+            if s.incident_kind and s.recovered_by and s.allocated:
+                if s.phase == 'recovering':
+                    return f'복구 준비({s.recovery_left}분 남음)를 확인하세요. 시간 버튼으로 진행하거나 다른 업무를 처리해도 됩니다.'
+                return '정상 실행 중입니다. 시간 버튼으로 남은 고객 작업을 끝까지 진행하세요.'
+        return story.objective if story else ''
+
+    def mark_chapter3_feedback_seen(self, key):
+        chapter3 = self.story.chapter3 if self.story else None
+        pending = self.chapter3_pending_feedback()
+        if chapter3 is None or pending is None or pending[0] != key:
+            raise ValueError('현재 표시할 Chapter 3 피드백이 아닙니다.')
+        with self._atomic():
+            chapter3.feedback_seen.append(key)
+
+    @property
+    def chapter3_retry_available(self):
+        """장애 대응이 최종 실패했거나 Chapter 3을 마친 뒤에만 [다시 도전]을 보여 줍니다. 항상 새 슬롯이며 현재 기록은 변경하지 않습니다."""
+        chapter3 = self.story.chapter3 if self.story else None
+        return bool(chapter3 is not None and (chapter3.completed or any(r.get('final') == 'failed' for r in chapter3.records.values())))
+
+    def chapter3_response_locked(self, run):
+        """Chapter 3 장애에서 진단창을 열기 전에는 대응 버튼을 쓸 수 없습니다."""
+        chapter3 = self.story.chapter3 if self.story else None
+        return bool(chapter3 is not None and run.request['id'] in chapter3.request_ids and run.state.incident_kind
+                    and run.request['id'] not in chapter3.diagnosed)
+
+    def chapter3_result(self):
+        story = self.story
+        if not story or story.chapter3 is None or not story.chapter3.completed:
+            raise ValueError('두 장애 미션을 모두 마친 뒤 결과를 확인할 수 있습니다.')
+        jobs = []
+        for rid in story.chapter3.request_ids:
+            run = self.runs[rid]
+            s, record = run.state, story.chapter3.records.get(str(rid), {})
+            summary = job_summary(run)
+            ok = bool(record.get('recovered_by')) and summary['key'] in ('on_time', 'late')
+            kind = record.get('kind')
+            jobs.append({'request_id': rid, 'company': run.mission['company_name'], 'country': run.mission['country'],
+                         'scenario': s.scenario, 'kind': kind, 'kind_label': KIND_LABELS.get(kind, '장애 발생 전 종료'),
+                         'record': dict(record), 'responses': [RESPONSE_LABELS[r] for r in record.get('responses', [])],
+                         'recovered': bool(record.get('recovered_by')), 'diagnosed': bool(record.get('diagnosed')),
+                         'downtime': record.get('downtime', 0), 'attempts': record.get('attempts', 0),
+                         'job': summary, 'success': ok, 'late': summary['key'] == 'late'})
+        failed = [j for j in jobs if not j['success']]
+        mentor = []
+        result = {'jobs': jobs, 'mission': 'success' if not failed else 'failed', 'practice': bool(story.practice),
+                  'servers': {spec.key: self.servers.hardware[spec.key].state for spec in SERVERS},
+                  'released': all(r.playthrough_id not in self.servers.allocations for r in self.runs.values())}
+        result['summary'] = chapter3_summary(result)
+        result['mentor'] = result['summary']['mentor']
+        return result
+
     def skip_tutorial(self):
         if self.story and not self.story.tutorial_completed:
             with self._atomic():
@@ -939,6 +1156,8 @@ class GameSession:
         if self.story:
             if self.runs:
                 return None
+            if self.story.practice and self.story.practice_chapter == 3:
+                return self._open_chapter3()
             if self.story.practice:
                 return self._open_chapter2()[0]
             mid = next(mid for mid, m in self.missions.items() if m['country'] == '싱가포르')
@@ -1028,8 +1247,12 @@ class GameSession:
         s.choose_plan(key)
         rng = random.Random(self.seed+self.roll_index)
         self.roll_index += 1
-        s.incident_at = (None if self.story else
-                         s.work_total*rng.uniform(.35,.65) if rng.random() < self.incident_chance else None)
+        incident = SCENARIOS[s.scenario].get('incident') if s.scenario in SCENARIOS else None
+        if incident and not retry:
+            s.incident_at = s.work_total*incident['at']   # Chapter 3: 재현 가능한 고정 지점. 랜덤 때문에 미션이 막히지 않습니다.
+        else:
+            s.incident_at = (None if self.story else
+                             s.work_total*rng.uniform(.35,.65) if rng.random() < self.incident_chance else None)
         run.playthrough_id = self.db.create_playthrough(run.mission['id'],key)
         allocation = Allocation(run.playthrough_id, parts)
         self.servers.reserve(allocation)
@@ -1321,6 +1544,7 @@ class GameSession:
         if isinstance(minutes,bool) or not isinstance(minutes,int) or minutes not in (10,30,60):
             raise ValueError('시간은 10분, 30분 또는 60분 단위로 진행해 주세요.')
         with self._atomic():
+            stop = False
             for _ in range(minutes//10):
                 self.minute += 10
                 for run in list(self.runs.values()):
@@ -1340,7 +1564,10 @@ class GameSession:
                     else:
                         run.state.advance(10)
                     if before == 'running' and run.state.phase == 'incident':
-                        self._emit(run,'incident',f'긴급 경고! {run.mission["country"]} 네트워크 장애 감지. 작업 진행이 멈췄습니다.')
+                        self._emit(run,'incident',f'긴급 경고! {run.mission["country"]} 네트워크 장애 감지. 작업 진행이 멈췄습니다.'
+                                   +(' [네트워크 진단]에서 원인을 확인하세요.' if run.state.incident_kind else ''))
+                        # Chapter 3: 장애가 발생한 시점에 남은 시간 진행을 멈춰, 확인하기 전에 중단 시간이 쌓이지 않게 합니다.
+                        stop = stop or bool(run.state.incident_kind)
                         self._feedback(run,'작업이 지연되고 있습니다. 현재 복구 상황을 알려주세요.', 'customer_incident')
                     if before == 'recovering' and run.state.phase == 'running':
                         self._emit(run,'recovery','복구 준비가 끝나 정상 실행을 재개했습니다.')
@@ -1349,9 +1576,15 @@ class GameSession:
                     self._check_deadlines(run)
                 self._advance_repairs()
                 self._deliver_scheduled_requests()
+                if stop:
+                    break
 
     def respond(self, key):
         run = self.current
+        chapter3 = self.story.chapter3 if self.story else None
+        if (chapter3 is not None and run.request['id'] in chapter3.request_ids and run.state.incident_kind
+                and run.request['id'] not in chapter3.diagnosed):
+            raise ValueError('먼저 [네트워크 진단]을 열어 장애 상태를 확인한 뒤 대응을 선택해 주세요.')
         with self._atomic():
             run.state.resolve(key)
             self._emit(run,'response',f'{RESPONSES[key]["label"]}: 필요 {run.state.network_needed} / 가용 {run.state.network_available}. {run.state.result_text}')
@@ -1393,7 +1626,7 @@ class GameSession:
         finish, due = self.minute+s.remaining_minutes+run.migration_left+repair, run.terms.get('due')
         issue = (f'네트워크 장애 · 필요 {s.network_needed} / 가용 {s.network_available} · '
                  f'중단 {s.downtime}/60분 · 대응 {s.response_attempts}/3 · 복구 시각 미정' if s.phase in ('incident','paused') else
-                 f'복구·재처리 준비 {s.recovery_left}분 · 일정 변경 안내 필요' if s.phase == 'recovering' else '')
+                 f'복구·재처리 준비 {s.recovery_left}분 · 일정 변경 안내 필요' if s.phase == 'recovering' and not s.incident_kind else '')
         hardware = self.hardware_status(run)
         issue = '\n'.join(v for v in (hardware, issue) if v)
         if due is not None and (finish > due or self.minute > due):
@@ -1442,7 +1675,9 @@ class GameSession:
             raise ValueError('재처리는 요청당 2회까지 가능합니다. 처리 불가 보고를 선택해 주세요.')
         with self._atomic():
             parent = run.playthrough_id
-            run.state = GameState(center=self.center,country=run.mission['country'],retry_count=old.retry_count+1)
+            # Chapter 3 요청은 같은 교육용 요청 조건(작업량/모드)으로 재처리합니다. 장애는 재현하지 않습니다(_start의 retry).
+            run.state = GameState(center=self.center,country=run.mission['country'],retry_count=old.retry_count+1,
+                                  scenario=old.scenario if old.scenario in CHAPTER3_SCENARIOS else None)
             run.delay_notified = False
             run.delay_notice_key = None
             self._start(run,key,retry=True)

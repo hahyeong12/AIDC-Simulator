@@ -183,7 +183,7 @@ class SlotMenuGuiTests(unittest.TestCase):
     def test_story_choice_and_back_open_no_database(self):
         self.story_menu()
         self.assertTrue(self.menu.story_panel.winfo_ismapped())
-        self.assertEqual(set(self.menu.story_buttons), {'new', 'continue', 'back'})
+        self.assertEqual(set(self.menu.story_buttons), {'new', 'chapter2', 'chapter3', 'continue', 'continue3', 'back'})
         self.menu.story_buttons['back'].invoke(); self.root.update()
         self.assertTrue(self.menu.mode_panel.winfo_ismapped())
         self.assertEqual(self.opened, [])

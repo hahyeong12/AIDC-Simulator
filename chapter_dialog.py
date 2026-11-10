@@ -97,7 +97,7 @@ class ChapterCompleteDialog(tk.Toplevel):
 
 class Chapter2CompleteDialog(tk.Toplevel):
     """Chapter 2 실제 결과. 미션 성공/실패와 종합 점수, 고객별 표, 선배 분석을 먼저 보여 주고 긴 기록은 접어 둡니다."""
-    def __init__(self, parent, result, select_mode, start_free, status, review, retry=None):
+    def __init__(self, parent, result, select_mode, start_free, status, review, retry=None, start_chapter3=None):
         super().__init__(parent, bg=BG)
         self.withdraw()
         success = result.get('mission') == 'success'
@@ -219,6 +219,10 @@ class Chapter2CompleteDialog(tk.Toplevel):
             button = ActionButton(buttons, 'Chapter 2 다시 도전 · 새 슬롯에서 처음부터 (현재 기록은 보존)', retry)
             button.grid(row=1, column=0, columnspan=4, sticky='ew', padx=3, pady=2)
             self.buttons['retry'] = button
+        if start_chapter3 is not None and success:
+            button = ActionButton(buttons, 'Chapter 3 시작 · 네트워크 장애 진단 (Chapter 2 기록은 보존)', start_chapter3)
+            button.grid(row=2, column=0, columnspan=4, sticky='ew', padx=3, pady=2)
+            self.buttons['chapter3'] = button
         center_dialog(self, parent, size=(820, 640), minimum=(640, 400))
 
     def toggle_detail(self):
@@ -226,6 +230,101 @@ class Chapter2CompleteDialog(tk.Toplevel):
         self.detail_shown = not self.detail_shown
         if self.detail_shown:
             self.summary.grid(row=6, sticky='nsew', padx=22)
+            self.detail_button.configure(text='상세 기록 접기 ▲')
+        else:
+            self.summary.grid_remove()
+            self.detail_button.configure(text='상세 기록 보기 ▼')
+
+
+class Chapter3CompleteDialog(tk.Toplevel):
+    """Chapter 3 결과(v0.9-3a-1 압축판). 판정·성공 수 → 결과표 → 선배 평가 2~3문장 → 접힌 상세 기록.
+    버튼은 스크롤 영역 밖 아래에 고정되어 창이 작아도 항상 보입니다."""
+    def __init__(self, parent, result, select_mode, start_free, status, review, retry=None):
+        super().__init__(parent, bg=BG)
+        self.withdraw()
+        success = result.get('mission') == 'success'
+        self.title('Chapter 3 '+('성공' if success else '실패')+' · 네트워크 장애 진단과 대응')
+        self.transient(parent)
+        self.columnconfigure(0, weight=1)
+        self.result = result
+        summary = result.get('summary') or {}
+        top = tk.Frame(self, bg=BG)
+        top.grid(row=0, sticky='ew', padx=22, pady=(10, 2))
+        top.columnconfigure(0, weight=1)
+        label(top, 'CHAPTER 3 · 네트워크 장애 진단과 대응', 9, MUTED).grid(row=0, column=0, sticky='w')
+        self.verdict = label(top, 'MISSION SUCCESS' if success else 'MISSION FAILED', 22, GREEN if success else RED, True)
+        self.verdict.grid(row=1, column=0, sticky='w')
+        self.count_label = label(top, f'{summary.get("ok", 0)} / {summary.get("total", 2)}', 24, CYAN, True)
+        self.count_label.grid(row=0, column=1, rowspan=2, sticky='e', padx=6)
+        label(top, '성공한 미션', 9, MUTED).grid(row=2, column=1, sticky='e', padx=6)
+        self.verdict_note = label(top, summary.get('verdict', ''), 10, TEXT, anchor='w', justify='left', wraplength=560)
+        self.verdict_note.grid(row=2, column=0, sticky='w')
+
+        self.scroll = ScrollArea(self)
+        self.scroll.grid(row=1, sticky='nsew')
+        self.rowconfigure(1, weight=1)
+        body = self.scroll.body
+        table = tk.Frame(body, bg=PANEL)
+        table.grid(row=0, sticky='ew', padx=22, pady=(4, 4))
+        for column, weight in enumerate((1, 2, 5, 2, 2)):
+            table.columnconfigure(column, weight=weight)
+        for column, name in enumerate(('미션', '장애 원인', '선택 대응', '복구 결과', '점수')):
+            label(table, name, 9, MUTED, True, anchor='w').grid(row=0, column=column, sticky='w', padx=8, pady=(4, 2))
+        self.table_cells = []
+        for row, values in enumerate(summary.get('table', []), start=1):
+            ok = values[3] == '성공'
+            row_cells = []
+            for column, text in enumerate(values):
+                color = (GREEN if ok else RED) if column == 3 else TEXT
+                cell = label(table, text, 10, color, column in (0, 3, 4), anchor='w', wraplength=240, justify='left')
+                cell.grid(row=row, column=column, sticky='w', padx=8, pady=3)
+                row_cells.append(cell)
+            self.table_cells.append(row_cells)
+        self.mentor_lines = result.get('mentor') or ['분석할 장애 기록이 없습니다.']
+        box, self.mentor_portrait, self.mentor_label = _mentor_box(body, '[선배 평가]', self.mentor_lines)
+        box.grid(row=1, sticky='ew', padx=22, pady=(6, 2))
+
+        lines = []
+        for index, job in enumerate(result['jobs']):
+            record = job['record']
+            lines.append(f'미션 {"AB"[index]} · {job["country"]} {job["company"]} — {job["job"]["task"]}')
+            for name, value in summary.get('rows', [[]]*2)[index]:
+                lines.append(f'  {name}: {value}')
+            lines.append(f'  운영 모드 {job["job"]["mode"]} · GPU {job["job"]["gpu"]} / 전력 {job["job"]["power"]} 사용 후 '
+                         + ('반환' if result.get('released') else '(반환 확인 필요)'))
+            if record:
+                lines.append(f'  마지막 수치: 필요 {record["needed"]} / 가용 {record["available"]} · 주 경로 '
+                             f'{"UP" if record["primary_up"] else "DOWN"}{" · 백업 경로 사용" if record["rerouted"] else ""}')
+        lines.append('서버 상태: '+' / '.join(f'{key} {value}' for key, value in result['servers'].items()))
+        if result.get('practice'):
+            lines.append('이 기록은 Chapter 3 독립 연습 슬롯의 것이며 Chapter 1·2 진행·점수와 별개입니다.')
+        lines.append('이 장의 네트워크 구성은 교육용이며 실제 네트워크의 모든 경우를 대표하지 않습니다.')
+        self.full_text = '\n'.join(lines)
+        self.detail_shown = False
+        self.detail_button = ActionButton(body, '상세 기록 보기 ▼', self.toggle_detail)
+        self.detail_button.grid(row=2, sticky='w', padx=22, pady=(4, 2))
+        self.summary = ScrolledText(body, wrap='word', height=9, font=(FONT, 10), bg=PANEL, fg=TEXT, bd=0, padx=12, pady=10)
+        self.summary.insert('1.0', self.full_text)
+        self.summary.configure(state='disabled')
+
+        buttons = tk.Frame(self, bg=BG)
+        buttons.grid(row=2, sticky='ew', padx=22, pady=(6, 10))
+        buttons.columnconfigure((0, 1, 2), weight=1)
+        self.buttons = {}
+        entries = [('retry', 'Chapter 3 다시 도전', retry)] if retry is not None else []
+        entries += [('modes', '모드 선택', select_mode), ('status', '진행 현황', status),
+                    ('free', '자유 운영 모드 시작', start_free), ('review', '교육 내용 다시 보기', review)]
+        for index, (key, text, command) in enumerate(entries):
+            button = ActionButton(buttons, text, command)
+            button.grid(row=index//3, column=index % 3, sticky='ew', padx=3, pady=2)
+            self.buttons[key] = button
+        center_dialog(self, parent, size=(820, 560), minimum=(640, 380))
+
+    def toggle_detail(self):
+        """조회 전용. 상세 기록(수치·반환 자원·서버 상태)은 접어 두었다가 필요할 때만 펼칩니다."""
+        self.detail_shown = not self.detail_shown
+        if self.detail_shown:
+            self.summary.grid(row=3, sticky='nsew', padx=22)
             self.detail_button.configure(text='상세 기록 접기 ▲')
         else:
             self.summary.grid_remove()

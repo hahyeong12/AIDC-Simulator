@@ -9,13 +9,13 @@ from ui import BG, MUTED, CYAN, MessageDialog, label, ActionButton
 
 
 class StoryDialogueDialog(MessageDialog):
-    def __init__(self, parent, pages, confirm=None, portrait_renderer=draw_portrait):
+    def __init__(self, parent, pages, confirm=None, portrait_renderer=draw_portrait, chapter_label='Chapter 1'):
         self.portrait_renderer = portrait_renderer
         self.portraits = {}
         super().__init__(parent, '교육 담당자', '울산 AIDC 운영팀', pages,
                          animate=False, message_kind='현장 교육', confirm=confirm,
                          history_hint='교육 도움말에서 다시 보기')
-        self.title('현장 교육 | 교육 담당자 · Chapter 1')
+        self.title(f'현장 교육 | 교육 담당자 · {chapter_label}')
         self.geometry('820x470')
         self.minsize(740, 430)
         self.columnconfigure(0, weight=0)

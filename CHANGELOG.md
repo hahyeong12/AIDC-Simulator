@@ -1,6 +1,34 @@
 
 # AIDC Simulator 개발 기록
 
+## v0.9-3a-2 네트워크 장애 복구 후 정상 운영 복귀 - 2026-11-10
+
+- `main.render_actions`: 실행/복구 준비 중에는 [네트워크 진단] 제거(장애·재시도 상태에서만 표시). `GameSession.delay_reason`: Chapter 3 복구 준비 중에는 실제 기한 위험이 있을 때만 지연 안내 필요.
+- `GameSession.recovery_status_lines()`(업무 패널 표시), `story_objective()`(복구 준비/정상 실행별 목표), 결과 카드 `상태` 행, 진단 확인 이벤트 로그(`diagnosis`), 작업 목록의 `복구 준비 N분`.
+- `GUIDES3` a_finish/b_finish 문구 정리(복구 준비 10분 버튼을 요구하지 않음).
+- 신규 `tests/test_chapter3_recovery.py` 17개(비GUI), `tests/test_chapter3_gui.py` 보강(미실행). 엔진 규칙·점수·저장 구조 변경 없음.
+
+## v0.9-3a-1 Chapter 3 UI·교육 흐름 개선 - 2026-11-10
+
+- 장애 발생 안내(`GUIDES3['a_diagnose'/'b_diagnose']`)를 한 페이지·항목별 행·용어 강조로 재구성(정답 비공개 유지).
+- `NetworkDiagnosisDialog`: 상단 요약 + 2열 진단표 + 하단 확인 버튼으로 압축, 중복 설명 삭제. `network_diagnosis()`에 `summary` 추가, 백업 경로 문구 단축.
+- 장문 중앙 대화 대신 `Chapter3FeedbackDialog` 결과 카드(성공/대응 실패/최종 실패 동일 구조). `story.chapter3_card()`·`chapter3_response_text()`(순수 함수), `GameSession.chapter3_card()`(조회 전용: 복구 준비가 남았을 때만 `can_advance`). 시간 진행은 기존 `advance_time(10)` 사용.
+- 대응 3회 실패: NETWORK RECOVERY FAILED 카드 + [Chapter 3 다시 도전]/[후속 처리로 돌아가기], 작업 영역의 [장애 결과 보기]로 재열람. 다음 미션 자동 이동 없음(v0.9-3a의 `mission_over` 유지).
+- `Chapter3CompleteDialog`: 결과표(미션·원인·대응 이력·복구·점수)와 3문장 선배 평가 중심으로 압축, 상세 기록 접기, 고정 버튼. `result_summary.chapter3_table/chapter3_mentor` 추가.
+- `StoryDialogueDialog(chapter_label=...)`: 교육창 제목이 Chapter 3 등 현재 Chapter를 표시(복습은 Chapter 1 유지).
+- 신규 `tests/test_chapter3_flow.py` 18개(비GUI), `tests/test_chapter3_gui.py` 보강(미실행). 버전 문자열 검증 갱신. 엔진 규칙·저장 구조 변경 없음.
+
+## v0.9-3a Chapter 3 네트워크 장애 진단과 대응 - 2026-11-10
+
+- 미션 A(`ch3_path`, 싱가포르): 주 경로 DOWN·가용 0·백업 UP(용량 6). 백업 경로 우회만 복구, 압축은 필요량만 줄일 뿐 경로를 복구하지 못함.
+- 미션 B(`ch3_bw`, 미국): 주 경로 UP·가용 4 < 필요 6(절약형 5)·백업은 같은 병목 공유. 압축(필요량 −2)만 복구, 우회는 용량을 늘리지 못함.
+- `game.py`: `SCENARIOS`에 두 시나리오와 `incident` 설정(결정적 발생 지점 40%), `GameState`의 선택 필드(`incident_kind`·`primary_up`·`rerouted`·`backup_capacity`·`response_log`·`recovered_by`)와 원인별 대응 효과. 장애 종류가 없는 상태(자유 운영·Chapter 1·2)는 기존 `resolve()` 경로를 그대로 사용.
+- `chapter3.py`: `Chapter3Progress`(11단계, 실제 사실로만 진행)·`network_diagnosis()`·`mission_over()`. `story.py`: `GUIDES3`·`chapter3_feedback_pages()`(기록된 대응만 설명)·`StoryProgress.chapter3/practice_chapter`.
+- `session.py`: `start_chapter3`(Chapter 2 성공 슬롯만)·독립 연습(`start_chapter=3`)·`view_network_diagnosis`(진단 확인 기록, 대응 전 필수)·장애 시점에서 남은 시간 진행 중단·두 번째 미션 자동 접수·`chapter3_result`. 재처리는 같은 시나리오 조건으로 하되 장애는 재현하지 않음.
+- 화면: `network_dialog.py`(네트워크 진단창), `Chapter3CompleteDialog`(요약표→분석→접힌 상세, 고정 버튼), 모드 선택의 Chapter 3 새로 시작·이어하기, Chapter 2 성공 결과창의 [Chapter 3 시작], 장애 중 [네트워크 진단] 버튼과 진단 전 대응 버튼 비활성.
+- 테스트: 신규 `tests/test_chapter3.py` 47개(비GUI), `tests/test_chapter3_gui.py`(작성만). 버전 문자열 검증 갱신. GUI 테스트는 실행하지 않았습니다.
+- 변경 없음: 점수·기한·자원 반환·동의 규칙, 서버 하드웨어 장애, SQL 구조. 서버 하드웨어 장애 교육은 v0.9-3b 예정.
+
 ## v0.9-2b-1 결과창 버튼 수정 및 배정 절차 통합 - 2026-11-10
 
 - 원인: Chapter 2 결과창이 한 열에 요약·표·분석·버튼을 모두 쌓아 창 높이가 부족하면 맨 아래의 재도전 버튼이 잘렸습니다. 이제 `ScrollArea`(가운데 스크롤) + 고정 버튼 행으로 분리해 성공/실패 모두 버튼이 항상 보입니다. Chapter 1 완료창과 배정 설정창도 같은 구조입니다.

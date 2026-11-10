@@ -52,6 +52,11 @@ class StorySlots:
                 return ''
             chapter2 = story.get('chapter2') if isinstance(story.get('chapter2'), dict) else None
             done2 = bool(chapter2) and len(chapter2.get('completed_steps', [])) >= 6
+            chapter3 = story.get('chapter3') if isinstance(story.get('chapter3'), dict) else None
+            if chapter3:
+                done3 = len(chapter3.get('completed_steps', [])) >= 11
+                return (' · Chapter 3 연습 ' if story.get('practice') is True and story.get('practice_chapter') == 3
+                        else ' · Chapter 3 ')+('완료' if done3 else '진행 중')
             if story.get('practice') is True:
                 return ' · Chapter 2 연습 '+('완료' if done2 else '진행 중')
             if chapter2:
@@ -59,6 +64,10 @@ class StorySlots:
             return ' · Chapter 1 '+('완료' if story.get('chapter_completed') else '진행 중')
         except Exception:
             return ''
+
+    def chapter3_in_progress(self):
+        """Chapter 3을 시작했지만 끝내지 않은 슬롯(이어하기 후보). 읽기 전용 설명 문자열로 판정합니다."""
+        return [p for p in self.available() if '· Chapter 3' in self.describe(p) and self.describe(p).endswith('진행 중')]
 
     def title(self, path):
         match = self.pattern.fullmatch(Path(path).name)

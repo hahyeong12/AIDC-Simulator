@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field, asdict
 
 from chapter2 import Chapter2Progress, EVENTS2
+from chapter3 import Chapter3Progress, EVENTS3
 
 
 LEGACY_STEPS = ('server', 'resources', 'request', 'allocation', 'time', 'complete')
@@ -141,6 +142,133 @@ def chapter2_failure_pages(failure):
     return pages
 
 
+# Chapter 3: 선배는 확인할 정보만 안내하고 정답 대응은 진단 뒤에도 알려 주지 않습니다. 결과 설명은 실제 기록에서만 만듭니다.
+# 항목은 각각 별도 행으로 나누어 한 화면에서 읽히게 합니다(v0.9-3a-1). 정답 대응은 공개하지 않습니다.
+_DIAGNOSE_HELP = ('[네트워크 진단]에서 살펴볼 항목\n\n'
+                  '① 【주 통신 경로】 — 연결되어 있는가?\n'
+                  '② 【필요 대역폭】 — 작업에 얼마나 필요한가?\n'
+                  '③ 【백업 경로】 — 이용 가능한 대체 경로가 있는가?\n'
+                  '④ 【GPU·서버 상태】 — 네트워크 외 장비에는 문제가 없는가?\n\n'
+                  '확인한 정보를 바탕으로 대응 방법을 선택해 보세요.')
+GUIDES3 = {
+    'briefing': ('선배의 Chapter 3 브리핑을 읽고 확인하세요.', [
+        Dialogue('mentor', '오늘은 운영 중에 생기는 네트워크 장애를 다룹니다. 작업이 갑자기 멈췄을 때 가장 위험한 것은 버튼부터 눌러 보는 습관이에요.'),
+        Dialogue('mentor', '장애가 나면 먼저 무엇이 멈췄는지 확인하고, 원인에 맞는 대응을 골라야 합니다. 같은 "네트워크 장애"여도 원인이 다르면 효과가 있는 대응이 다를 수 있어요.'),
+        Dialogue('mentor', '오늘은 서로 다른 장애를 두 번 겪게 됩니다. 정답은 알려 드리지 않을 테니 진단 화면의 수치를 보고 직접 판단해 보세요. 준비되면 브리핑을 확인하고 첫 고객 요청을 열어 보세요.'),
+        Dialogue('system', '대응은 최대 3회, 장애 중단은 60분까지입니다. 시도한 대응은 비용과 점수에 실제로 반영됩니다. 이 장의 네트워크 구성은 교육용이며 실제 네트워크의 모든 경우를 대표하지 않습니다.')]),
+    'a_start': ('AIDC LINK에서 싱가포르 요청을 확인하고 [배정 설정·선택]에서 작업을 시작하세요.', [
+        Dialogue('mentor', '첫 고객 요청이 도착했습니다. 요청서를 읽고 [배정 설정·선택]에서 배정안을 직접 확인해 작업을 시작해 보세요.')]),
+    'a_incident': ('시간 버튼으로 작업을 진행하세요. 작업 중 장애가 발생하면 시간이 멈춥니다.', [
+        Dialogue('mentor', '작업이 시작됐습니다. 시간을 진행하면서 상태를 지켜보세요. 이상 신호가 나타나면 진행이 멈추니 그때 바로 대응하지 말고 상태부터 확인하면 됩니다.')]),
+    'a_diagnose': ('[네트워크 진단]을 열어 장애 원인을 확인하세요.', [
+        Dialogue('mentor', '작업이 중단됐습니다. 먼저 【장애 원인】을 확인하세요.\n\n'+_DIAGNOSE_HELP)]),
+    'a_respond': ('진단 정보를 근거로 직접 판단해 대응을 선택하세요.', [
+        Dialogue('mentor', '진단 정보를 확인했네요. 이제 수치를 근거로 어떤 대응이 맞을지 스스로 판단해 보세요. 대응은 3회까지이고 시도마다 비용이 들며, 중단 시간은 계속 쌓입니다. 결과가 기대와 다르면 진단 정보를 다시 열어 비교하면 됩니다.')]),
+    'a_finish': ('시간을 진행해 작업을 마무리하세요. 실패했다면 후속 조치를 선택합니다.', [
+        Dialogue('mentor', '대응을 선택했습니다. 복구되었다면 복구 준비가 끝난 뒤 작업이 다시 진행됩니다. 관제실로 돌아가 작업 상태를 확인해 보세요. 복구되지 않았다면 진단 정보를 다시 확인하세요.')]),
+    'b_start': ('두 번째 장애 미션: 미국 요청을 확인하고 작업을 시작하세요.', [
+        Dialogue('mentor', '첫 장애를 처리했네요. 이번에는 다른 고객 작업에서 장애가 발생할 수 있습니다. 앞서 효과가 있었던 대응이 이번에도 통할지는 진단 수치로 판단해야 합니다.'),
+        Dialogue('mentor', '미국 고객의 요청을 확인하고 [배정 설정·선택]에서 작업을 시작해 보세요.')]),
+    'b_incident': ('시간 버튼으로 작업을 진행하세요. 작업 중 장애가 발생하면 시간이 멈춥니다.', [
+        Dialogue('mentor', '작업이 시작됐습니다. 시간을 진행하면서 상태를 지켜보세요.')]),
+    'b_diagnose': ('[네트워크 진단]을 열어 장애 원인을 확인하세요.', [
+        Dialogue('mentor', '이번에도 작업이 중단됐습니다. 지난번과 같은 원인이라고 단정하지 마세요.\n\n'+_DIAGNOSE_HELP)]),
+    'b_respond': ('진단 정보를 근거로 직접 판단해 대응을 선택하세요.', [
+        Dialogue('mentor', '이번 장애의 수치를 지난번과 비교해 보세요. 어떤 대응이 필요한지는 이번 진단 정보가 알려 줍니다.')]),
+    'b_finish': ('시간을 진행해 작업을 마무리하세요. 실패했다면 후속 조치를 선택합니다.', [
+        Dialogue('mentor', '대응을 선택했습니다. 복구되었다면 복구 준비가 끝난 뒤 작업이 다시 진행됩니다. 관제실로 돌아가 작업 상태를 확인해 보세요.')]),
+    'done': ('Chapter 3 종료 · 결과 화면에서 두 장애의 진단과 대응 결과를 확인하세요.', [
+        Dialogue('system', '두 장애 미션이 끝났습니다. 결과 화면에서 장애별 진단, 선택한 대응, 복구 결과, 중단 시간과 운영 점수를 확인할 수 있습니다.')]),
+}
+
+_CAUSES = {
+    'path_down': ('통신 경로 단절', '주 통신 경로가 DOWN이라 데이터가 지나갈 길이 없었고, 백업 경로는 정상이었습니다.',
+                  '진단에서 주 경로 DOWN과 백업 경로 UP을 확인하고 백업 경로로 우회하는 것이 맞는 조치였습니다.'),
+    'bandwidth': ('가용 대역폭 부족', '주 통신 경로는 연결되어 있었지만 가용 대역폭이 필요 대역폭보다 작았고, 백업 경로는 같은 병목 구간을 공유했습니다.',
+                  '진단에서 경로는 UP인데 필요 대역폭이 가용 대역폭보다 크다는 점을 확인하고 필요량을 줄이는 압축을 선택하는 것이 맞는 조치였습니다.'),
+}
+_NOTE = '이 설명은 이번 교육용 구성에서의 결과이며, 실제 네트워크에서는 구성에 따라 효과가 다를 수 있습니다.'
+
+
+def chapter3_feedback_pages(key, record):
+    """저장된 장애 기록의 사실만으로 선배 피드백을 만듭니다. 시도하지 않은 대응은 시도했다고 말하지 않습니다."""
+    names = {'reroute': '백업 경로 우회', 'compress': '전송 데이터 압축', 'ignore': '기존 설정 유지'}
+    tried = ' → '.join(names[r] for r in record.get('responses', []))
+    cause, cause_text, improve = _CAUSES[record['kind']]
+    if key == 'fail':
+        last = names[record['responses'][-1]]
+        left = max(0, 3-record['attempts'])
+        link = '주 통신 경로 UP' if record['primary_up'] else ('백업 경로로 전환됨' if record['rerouted'] else '주 통신 경로 DOWN')
+        return [Dialogue('mentor', f'{last}을(를) 적용했지만 작업은 재개되지 않았습니다. 관찰된 결과: {link}, 필요 대역폭 {record["needed"]} / '
+                                   f'가용 대역폭 {record["available"]}. 중단 시간은 {record["downtime"]}분째입니다.'),
+                Dialogue('mentor', f'남은 대응은 {left}회입니다. [네트워크 진단]을 다시 열어 지금의 수치를 처음 진단과 비교해 보세요. '
+                                   '무엇이 바뀌었고 무엇이 그대로인지가 다음 판단의 근거입니다.')]
+    if key == 'recovered':
+        winner = names[record['recovered_by']]
+        pages = [Dialogue('mentor', f'복구에 성공했습니다. 이번 장애의 원인은 "{cause}"였습니다. {cause_text}')]
+        wasted = [r for r in record['responses'] if r != record['recovered_by']]
+        if record['kind'] == 'path_down':
+            why = (f'{winner}으로 막힌 주 경로 대신 백업 경로(용량 {record.get("backup", 0)})를 쓰게 되어 데이터가 다시 지나갈 수 있었습니다.')
+            if 'compress' in wasted:
+                why += ' 앞서 시도한 압축은 필요 대역폭을 줄였지만 끊어진 경로를 되살리지는 못했습니다.'
+        else:
+            why = f'{winner}으로 필요 대역폭을 가용 대역폭({record["available"]}) 이하로 낮춰 같은 경로로도 전송할 수 있게 되었습니다.'
+            if 'reroute' in wasted:
+                why += ' 앞서 시도한 백업 경로 우회는 같은 병목 구간을 지나 가용 대역폭을 늘리지 못했습니다.'
+        pages.append(Dialogue('mentor', why+f' 시도한 대응: {tried}. 그동안 {record["downtime"]}분이 중단되었습니다. '+_NOTE))
+        return pages
+    if key == 'failed':
+        reason = ('대응을 선택하지 못한 채 중단 시간이 60분을 넘겼습니다.' if not record.get('responses')
+                  else f'대응 {record["attempts"]}회({tried})로 복구하지 못했거나 중단 시간이 60분을 넘겼습니다.')
+        return [Dialogue('mentor', f'이번 작업은 정상 완료하지 못했습니다. {reason}'),
+                Dialogue('mentor', f'실제 원인은 "{cause}"였습니다. {cause_text}'),
+                Dialogue('mentor', f'개선점: {improve} 장애가 나면 먼저 진단 정보를 읽고, 시도한 조치가 효과가 없으면 같은 조치를 반복하지 말고 수치를 다시 비교하세요. '+_NOTE)]
+    raise ValueError('알 수 없는 Chapter 3 피드백입니다.')
+
+
+_SHORT = {'reroute': '우회', 'compress': '압축', 'ignore': '유지'}
+_CAUSE_TITLE = {'path_down': '주 통신 경로 단절', 'bandwidth': '가용 대역폭 부족'}
+
+
+def chapter3_response_text(record):
+    """실제 시도 기록을 '압축 실패 → 우회 성공'처럼 요약합니다. 마지막 대응만 보여 주어 오해하지 않게 합니다."""
+    responses = record.get('responses', [])
+    if not responses:
+        return '대응 없음'
+    return ' → '.join(f'{_SHORT[r]} '+('성공' if record.get('recovered_by') and i == len(responses)-1 else '실패')
+                      for i, r in enumerate(responses))
+
+
+def chapter3_card(kind, record, closed=False):
+    """장애 결과 카드(제목·행·선배 한마디). 성공/실패 모두 같은 구조이며 저장된 장애 기록의 사실만 씁니다.
+    kind: 'recovered' | 'fail'(대응이 실패했지만 기회가 남음) | 'failed'(작업 최종 실패)."""
+    cause = _CAUSE_TITLE[record['kind']]
+    tried = chapter3_response_text(record)
+    if kind == 'recovered':
+        if record['kind'] == 'path_down':
+            result = '통신 경로 복구'
+            mentor = '끊어진 경로는 압축만으로 복구할 수 없습니다. 정상적인 백업 경로로 우회한 판단이 적절했습니다.'
+        else:
+            result = f'필요 {record["needed"]} ≤ 가용 {record["available"]}로 복구'
+            mentor = '경로는 연결되어 있었고 용량이 문제였습니다. 백업 경로는 같은 병목을 지나 용량이 늘지 않으므로 필요량을 줄인 압축이 적절했습니다.'
+        return {'kind': kind, 'title': '네트워크 복구 성공', 'tone': 'success',
+                'rows': [('원인', cause), ('선택 대응', tried), ('실제 결과', result)],
+                'mentor': mentor+' (교육용 구성 기준)'}
+    if kind == 'fail':
+        link = '주 경로 UP' if record['primary_up'] else ('백업 경로 사용' if record['rerouted'] else '주 경로 DOWN')
+        left = max(0, 3-record['attempts'])
+        return {'kind': kind, 'title': f'복구되지 않음 · 대응 {record["attempts"]}/3회', 'tone': 'warn',
+                'rows': [('선택 대응', tried),
+                         ('실제 결과', f'작업 재개 안 됨 · {link} · 필요 {record["needed"]} / 가용 {record["available"]}')],
+                'mentor': f'바뀐 수치를 처음 진단과 비교해 보세요. 남은 대응은 {left}회입니다.'}
+    if kind == 'failed':
+        return {'kind': kind, 'title': 'NETWORK RECOVERY FAILED', 'tone': 'fail',
+                'rows': [('원인', cause), ('시도한 대응', tried), ('복구 결과', '실패'),
+                         ('작업 상태', '실패 · 최종 보고 완료' if closed else '실패 · 후속 처리 필요')],
+                'mentor': '이번에는 적절한 대응을 찾지 못했습니다. 어떤 조건 때문에 복구되지 않았는지 다시 살펴보세요.'}
+    raise ValueError('알 수 없는 Chapter 3 결과 카드입니다.')
+
+
 @dataclass
 class StoryProgress:
     chapter: int = 1
@@ -163,16 +291,28 @@ class StoryProgress:
     legacy_tutorial_completed: bool = False
     dialogue_seen: list[str] = field(default_factory=list)
     chapter2: Chapter2Progress | None = None
-    practice: bool = False  # Chapter 2만 독립 슬롯에서 시작한 연습. Chapter 1을 플레이한 기록으로 취급하지 않습니다.
+    practice: bool = False  # Chapter 2/3만 독립 슬롯에서 시작한 연습. Chapter 1을 플레이한 기록으로 취급하지 않습니다.
+    chapter3: Chapter3Progress | None = None
+    practice_chapter: int = 2  # 연습 슬롯이 시작한 Chapter(2 또는 3). 연습이 아니면 기본값 2
 
     def __post_init__(self):
         if isinstance(self.chapter2, dict):
             self.chapter2 = Chapter2Progress(**self.chapter2)
-        if type(self.practice) is not bool:
+        if isinstance(self.chapter3, dict):
+            self.chapter3 = Chapter3Progress(**self.chapter3)
+        if type(self.practice) is not bool or type(self.practice_chapter) is not int or self.practice_chapter not in (2, 3):
             raise ValueError('저장된 Chapter 2 연습 표시가 올바르지 않습니다.')
+        if not self.practice and self.practice_chapter != 2:
+            raise ValueError('저장된 연습 Chapter 표시가 올바르지 않습니다.')
         if self.chapter2 is not None and (not isinstance(self.chapter2, Chapter2Progress)
-                                          or not (self.chapter_completed or self.practice)):
+                                          or not (self.chapter_completed or (self.practice and self.practice_chapter == 2))):
             raise ValueError('저장된 Chapter 2 진행 상태가 올바르지 않습니다.')
+        # Chapter 3은 Chapter 2를 끝낸 슬롯 또는 Chapter 3 독립 연습 슬롯에만 있습니다. 독립 연습에는 Chapter 1/2 기록이 없습니다.
+        if self.chapter3 is not None and (
+                not isinstance(self.chapter3, Chapter3Progress)
+                or (self.practice_chapter == 3 and (not self.practice or self.chapter2 is not None))
+                or (self.practice_chapter != 3 and (self.chapter2 is None or not self.chapter2.completed))):
+            raise ValueError('저장된 Chapter 3 진행 상태가 올바르지 않습니다.')
         if self.practice and (self.chapter_completed or self.completed_steps or self.tutorial_completed
                               or self.skipped or self.first_work_completed or self.mission_status != 'pending'
                               or self.request_id is not None or self.legacy_progress):
@@ -190,7 +330,7 @@ class StoryProgress:
                 or self.selected_server not in (None, 'A', 'B', 'C', 'D')):
             raise ValueError('저장된 스토리 진행 상태가 올바르지 않습니다.')
         if (not isinstance(self.dialogue_seen, list)
-                or any(not isinstance(key, str) or key not in (*STEPS, 'closed', 'skipped', *EVENTS2) for key in self.dialogue_seen)
+                or any(not isinstance(key, str) or key not in (*STEPS, 'closed', 'skipped', *EVENTS2, *EVENTS3) for key in self.dialogue_seen)
                 or len(set(self.dialogue_seen)) != len(self.dialogue_seen)):
             raise ValueError('저장된 대화 표시 이력이 올바르지 않습니다.')
         expected = STEPS[min(len(self.completed_steps), len(STEPS)-1)]
@@ -246,6 +386,10 @@ class StoryProgress:
             data.pop('chapter2')  # Chapter 1 저장 형식을 그대로 유지합니다.
         if not data['practice']:
             data.pop('practice')
+        if data['chapter3'] is None:
+            data.pop('chapter3')
+        if data['practice_chapter'] == 2:
+            data.pop('practice_chapter')  # Chapter 2 연습/이전 저장 형식을 그대로 유지합니다.
         return data
 
     @property
@@ -253,29 +397,41 @@ class StoryProgress:
         return self.chapter2 is not None and not self.chapter2.completed
 
     @property
+    def chapter3_active(self):
+        return self.chapter3 is not None and not self.chapter3.completed
+
+    @property
     def ui_done(self):
-        """화면이 보는 '현재 Chapter 완료' 여부. Chapter 2가 시작되면 Chapter 2 기준입니다."""
+        """화면이 보는 '현재 Chapter 완료' 여부. 가장 나중에 시작한 Chapter 기준입니다."""
+        if self.chapter3 is not None:
+            return self.chapter3.completed
         return self.chapter2.completed if self.chapter2 is not None else self.chapter_completed
 
     @property
     def ui_step(self):
+        if self.chapter3 is not None:
+            return 'c3_done' if self.chapter3.completed else 'c3_'+self.chapter3.step
         if self.chapter2 is None:
             return self.step
         return 'c2_done' if self.chapter2.completed else 'c2_'+self.chapter2.step
 
     @property
     def ui_completed_steps(self):
+        if self.chapter3 is not None:
+            return ['c3_'+key for key in self.chapter3.completed_steps]
         if self.chapter2 is None:
             return self.completed_steps
         return ['c2_'+key for key in self.chapter2.completed_steps]
 
     @property
     def chapter_label(self):
+        if self.chapter3 is not None:
+            return 'Chapter 3'
         return 'Chapter 2' if self.chapter2 is not None else f'Chapter {self.chapter}'
 
     @property
     def dialogue_event(self):
-        if self.chapter2 is not None:
+        if self.chapter2 is not None or self.chapter3 is not None:
             return self.ui_step
         if self.chapter_completed:
             return 'complete'
@@ -285,6 +441,8 @@ class StoryProgress:
 
     @property
     def objective(self):
+        if self.chapter3 is not None:
+            return GUIDES3[self.ui_step[3:]][0]
         if self.chapter2 is not None:
             if self.chapter2.completed and self.chapter2.failure is not None:
                 return GUIDES2_FAILED_DONE[0]
@@ -299,6 +457,8 @@ class StoryProgress:
 
     @property
     def dialogue(self):
+        if self.chapter3 is not None:
+            return GUIDES3[self.ui_step[3:]][1]
         if self.chapter2 is not None:
             if self.chapter2.completed and self.chapter2.failure is not None:
                 return GUIDES2_FAILED_DONE[1]

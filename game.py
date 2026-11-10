@@ -1,5 +1,5 @@
 """AIDC Simulator: GUI나 DB에 의존하지 않는 게임 규칙."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 GPU_TOTAL = 10
 POWER_TOTAL = 10
@@ -106,6 +106,18 @@ SCENARIOS = {
     "ch2_us_v2": {"plans": {"performance": {"label": "고성능 모드", "gpu": 6, "power": 6, "network": 6, "bonus": 15},
                             "economy": {"label": "절약형 모드", "gpu": 4, "power": 3, "network": 5, "bonus": 5}},
                   "work": 70, "window": ("우선 · 데이터 분석", 10, 100, 120)},
+    # v0.9-3a Chapter 3: 네트워크 장애 진단 교육용 구성(실제 네트워크의 일반 규칙이 아닙니다). 장애는 작업량 40%에서 결정적으로 발생합니다.
+    # path_down: 주 통신 경로 단절(가용 0). 백업 경로(용량 6)로 우회해야 복구되고 압축만으로는 복구되지 않습니다.
+    # bandwidth: 경로는 연결됐지만 가용 대역폭(4)이 필요량(고성능 6/절약형 5)보다 작습니다. 백업 경로는 같은 병목 구간을 공유해
+    #            용량이 늘지 않으므로 압축으로 필요량을 줄여야 복구됩니다.
+    "ch3_path": {"plans": {"performance": {"label": "고성능 모드", "gpu": 4, "power": 4, "network": 5, "bonus": 15},
+                           "economy": {"label": "절약형 모드", "gpu": 3, "power": 2, "network": 3, "bonus": 5}},
+                 "work": 60, "window": ("일반 · 모델 학습", 10, 150, 240),
+                 "incident": {"kind": "path_down", "at": .4, "available": 0, "backup": 6}},
+    "ch3_bw": {"plans": {"performance": {"label": "고성능 모드", "gpu": 4, "power": 3, "network": 6, "bonus": 15},
+                         "economy": {"label": "절약형 모드", "gpu": 3, "power": 2, "network": 5, "bonus": 5}},
+               "work": 50, "window": ("우선 · 데이터 분석", 10, 140, 220),
+               "incident": {"kind": "bandwidth", "at": .4, "available": 4, "backup": 4}},
 }
 
 
@@ -156,7 +168,14 @@ class GameState:
     response_attempts: int = 0
     cost_penalty: int = 0
     retry_count: int = 0
-    scenario: str | None = None  # Chapter 2 전용 요청 조건 이름. 없으면 국가별 기본 규칙
+    scenario: str | None = None  # Chapter 2/3 전용 요청 조건 이름. 없으면 국가별 기본 규칙
+    # v0.9-3a: 장애 원인 구분(Chapter 3 시나리오 전용). 없는 이전 저장과 자유 운영은 기본값 그대로 기존 규칙을 사용합니다.
+    incident_kind: str | None = None   # 'path_down' | 'bandwidth'
+    primary_up: bool = True            # 주 통신 경로 상태
+    rerouted: bool = False             # 백업 경로로 우회했는지
+    backup_capacity: int = 0           # 백업 경로 용량
+    response_log: list = field(default_factory=list)  # 시도한 대응 순서(항상 새 리스트로 교체해 롤백과 충돌하지 않게 합니다)
+    recovered_by: str | None = None    # 복구에 성공한 대응
 
     def __post_init__(self):
         if self.center is None:
@@ -206,7 +225,14 @@ class GameState:
         if self.phase != "running":
             raise ValueError("정상 실행 중인 작업에서만 장애가 발생합니다.")
         self.incident_occurred = True
-        self.network_available = NETWORK_DURING_INCIDENT
+        config = SCENARIOS[self.scenario].get("incident") if self.scenario in SCENARIOS else None
+        if config:
+            self.incident_kind = config["kind"]
+            self.primary_up = config["kind"] != "path_down"
+            self.backup_capacity = config["backup"]
+            self.network_available = config["available"]
+        else:
+            self.network_available = NETWORK_DURING_INCIDENT
         self.phase = "incident"
 
     def advance(self, minutes):
@@ -242,11 +268,17 @@ class GameState:
         self.response = response_key
         self.response_attempts += 1
         self.cost_penalty += RESPONSES[response_key]["penalty"]
-        if response_key == "reroute":
-            self.network_available = min(NETWORK_NORMAL, self.network_available + 4)
-        elif response_key == "compress":
-            self.network_needed = max(1, self.network_needed - 2)
-        if self.network_needed <= self.network_available:
+        self.response_log = [*self.response_log, response_key]
+        if self.incident_kind:
+            recovered = self._apply_diagnosed_response(response_key)
+        else:
+            if response_key == "reroute":
+                self.network_available = min(NETWORK_NORMAL, self.network_available + 4)
+            elif response_key == "compress":
+                self.network_needed = max(1, self.network_needed - 2)
+            recovered = self.network_needed <= self.network_available
+        if recovered:
+            self.recovered_by = response_key
             self.phase = "recovering"
             self.recovery_left = 10
             self.result_text = "네트워크 복구에 성공했습니다. 10분 복구 후 작업을 재개합니다."
@@ -254,7 +286,32 @@ class GameState:
             self.finish(False, "장애 대응 3회가 실패하여 이번 수행을 중단했습니다. 후속 조치를 선택해 주세요.")
         else:
             self.phase = "paused"
-            self.result_text = "복구 자원이 부족하여 일시 중단되었습니다. 다른 대응을 재시도할 수 있습니다."
+            self.result_text = ("복구 자원이 부족하여 일시 중단되었습니다. 다른 대응을 재시도할 수 있습니다."
+                                if not self.incident_kind else self.observed_result(response_key))
+
+    @property
+    def link_ok(self):
+        """작업 데이터가 지나갈 통신 경로가 살아 있는지(주 경로 또는 우회한 백업 경로)."""
+        return self.primary_up or self.rerouted
+
+    def observed_result(self, response_key):
+        """실패한 대응 직후 관찰되는 사실만 서술합니다(정답 대응은 알려 주지 않습니다)."""
+        link = "주 통신 경로 UP" if self.primary_up else ("백업 경로 사용 중" if self.rerouted else "주 통신 경로 DOWN")
+        applied = {"reroute": "백업 경로로 전환했습니다.", "compress": "전송 데이터를 압축했습니다.",
+                   "ignore": "기존 설정을 유지했습니다."}[response_key]
+        return (f"{applied} 그러나 작업은 재개되지 않았습니다. ({link} · 필요 대역폭 {self.network_needed} / "
+                f"가용 {self.network_available}) 남은 대응 {max(0, 3-self.response_attempts)}회. 상태를 다시 확인해 판단해 주세요.")
+
+    def _apply_diagnosed_response(self, response_key):
+        """Chapter 3 교육 구성의 원인별 효과. 대응 효과는 모두 기록된 수치로 계산하며 복구 여부만 반환합니다."""
+        if response_key == "reroute":
+            self.rerouted = True
+            if self.incident_kind == "path_down":
+                self.network_available = min(NETWORK_NORMAL, self.backup_capacity)
+            # bandwidth: 백업 경로가 같은 병목 구간을 공유하므로 가용 대역폭은 늘지 않습니다.
+        elif response_key == "compress":
+            self.network_needed = max(1, self.network_needed - 2)
+        return self.link_ok and self.network_needed <= self.network_available
 
     def finish(self, succeeded, text):
         if not self.allocated:

@@ -107,6 +107,77 @@ def chapter1_summary(result, run):
             ('반환 자원', f'GPU {result["gpu"]}개 · 전력 {result["power"]}단위 반환')]
 
 
+def chapter3_diagnosis_text(job):
+    """저장된 장애 기록에서 만든 진단 요약. 장애 전에 끝난 요청에는 진단을 만들지 않습니다."""
+    record = job['record']
+    if not record:
+        return '장애 발생 전에 요청이 종료되어 진단 정보 없음'
+    if record['kind'] == 'path_down':
+        text = f'주 경로 DOWN / 백업 경로 정상(용량 {record["backup"]}) / GPU·서버 정상'
+    else:
+        text = (f'주 경로 UP / 필요 대역폭 {record["initial_needed"]} > 가용 {record["available"]}'
+                f' / 백업 경로는 같은 병목 공유 / GPU·서버 정상')
+    return text + ('' if record.get('diagnosed') else ' (진단창을 열지 않음)')
+
+
+def chapter3_job_rows(job):
+    """미션 하나의 요약표 행. 모든 값은 기록된 장애·대응·작업 결과에서 읽습니다."""
+    summary = job['job']
+    if summary['key'] in ('on_time', 'late'):
+        work = f'정상 완료 · 기한 {summary["deadline"]}'
+    else:
+        work = summary['label']
+    return [('장애', job['kind_label']), ('진단', chapter3_diagnosis_text(job)),
+            ('선택 대응', ' → '.join(job['responses']) if job['responses'] else '대응 없음'),
+            ('복구 결과', '성공' if job['recovered'] else '실패'),
+            ('중단 시간', f'{job["downtime"]}분 (대응 {job["attempts"]}회)'),
+            ('작업 결과', work),
+            ('운영 점수', f'{summary["score"]}점' if summary['score'] is not None else '확정 점수 없음(정상 완료 못함)')]
+
+
+CH3_CAUSE_SHORT = {'path_down': '경로 단절', 'bandwidth': '대역폭 부족', None: '발생 전 종료'}
+
+
+def chapter3_table(jobs):
+    """결과 요약표: 미션 · 장애 원인 · 선택 대응(시도 횟수 포함) · 복구 결과 · 점수."""
+    from story import chapter3_response_text
+    rows = []
+    for index, job in enumerate(jobs):
+        record = job['record']
+        score = job['job']['score']
+        rows.append(("AB"[index], CH3_CAUSE_SHORT[job['kind']],
+                     chapter3_response_text(record) + (f' · {job["attempts"]}회' if job['attempts'] else ''),
+                     '성공' if job['recovered'] else '실패', f'{score}점' if score is not None else '확정 점수 없음'))
+    return rows
+
+
+def chapter3_mentor(jobs, ok):
+    """선배 평가 3문장 이내: 원인과 적절했던(또는 필요했던) 조치, 최종 결과."""
+    lines = []
+    for index, job in enumerate(jobs):
+        if not job['record']:
+            continue
+        name = "AB"[index]
+        if job['kind'] == 'path_down':
+            lines.append(f'{name}: 끊어진 경로에는 정상 백업 경로로 우회한 조치가 적절했습니다.' if job['recovered'] else
+                         f'{name}: 끊어진 경로는 압축으로 복구되지 않습니다. 정상 백업 경로로 우회해야 했습니다.')
+        else:
+            lines.append(f'{name}: 경로는 연결되어 있었고 용량이 문제여서 필요량을 줄이는 압축이 적절했습니다.' if job['recovered'] else
+                         f'{name}: 백업 경로는 같은 병목을 지나 용량이 늘지 않습니다. 필요량을 줄이는 압축이 필요했습니다.')
+    lines.append(f'최종 결과: {len(jobs)}개 장애 중 {ok}개를 복구하고 정상 완료했습니다.')
+    return lines[:3]
+
+
+def chapter3_summary(result):
+    jobs = result['jobs']
+    ok = sum(1 for j in jobs if j['success'])
+    return {'mission': result['mission'], 'ok': ok, 'total': len(jobs),
+            'table': chapter3_table(jobs), 'mentor': chapter3_mentor(jobs, ok),
+            'rows': [chapter3_job_rows(job) for job in jobs],
+            'verdict': ('두 장애 모두 원인에 맞게 복구하고 정상 완료' if ok == len(jobs)
+                        else f'{len(jobs)}개 장애 미션 중 {ok}개만 복구 후 정상 완료')}
+
+
 def chapter2_strategy(jobs, concurrent):
     """'일본 고성능 + 미국 절약형' 같은 실제 운영 전략 한 줄."""
     parts = [f'{j["country"]} {j["mode"].replace(" 모드", "")}' for j in jobs if j['started'] is not None]

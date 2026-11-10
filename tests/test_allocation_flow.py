@@ -215,7 +215,7 @@ class FlowWiringTests(unittest.TestCase):
         for name in ('main.py', 'allocation_dialog.py', 'chapter_dialog.py'):
             text = (ROOT / name).read_text(encoding='utf-8')
             self.assertNotRegex(text, r"v0\.9-2a-3", name)
-        self.assertEqual(VERSION, 'v0.9-2b-1')
+        self.assertEqual(VERSION, 'v0.9-3a-2')
         self.assertIn(VERSION, (ROOT / 'README.md').read_text(encoding='utf-8').split('\n', 3)[2])
 
 

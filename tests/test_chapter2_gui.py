@@ -79,7 +79,7 @@ class PracticeAndRetryGuiTests(unittest.TestCase):
 
     def test_story_menu_offers_chapter_one_chapter_two_and_continue(self):
         self.selector.show_story_menu(); self.root.update()
-        self.assertEqual({'new', 'chapter2', 'continue', 'back'}, set(self.selector.story_buttons))
+        self.assertEqual({'new', 'chapter2', 'chapter3', 'continue', 'continue3', 'back'}, set(self.selector.story_buttons))
 
     def test_new_chapter_two_practice_starts_clean_in_a_new_slot(self):
         app = self.selector.new_story(2); self.root.update()
