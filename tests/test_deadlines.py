@@ -86,7 +86,7 @@ class DeadlineTests(unittest.TestCase):
         self.assertTrue(run.state.succeeded)
         self.assertEqual(run.terms['penalty'], 12)  # 배정 10분=2점, 완료 20분=10점
         self.assertEqual(run.state.score, 88)
-        self.assertIn('일정보다 지연', run.last_feedback)
+        self.assertIn('지연', run.last_feedback)
 
     def test_notice_does_not_extend_due_or_erase_deadline_penalty(self):
         run = self.japan()
@@ -138,7 +138,7 @@ class DeadlineTests(unittest.TestCase):
         self.assertIn('작업이 재개', s.read_conversation(1)[0][1])
         while s.current.state.phase != 'finished': s.advance_time(10)
         text = '\n'.join(t for _,t in s.read_conversation(1))
-        self.assertIn('작업 완료', text)
+        self.assertIn('완료', text)
         self.assertNotIn('복구 상황', text)
         history = s.conversation(1, history=True)
         self.assertIn('[신규 작업 요청]', history[0][1])

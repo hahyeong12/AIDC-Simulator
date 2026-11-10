@@ -8,6 +8,7 @@ from database import Database
 from game import DataCenter, GameState, RESPONSES, request_terms, request_conditions, game_time
 from server_resources import ServerPool, Allocation, SERVERS, ServerHealth
 from story import StoryProgress
+from result_summary import customer_reaction, outcome_key, job_summary, chapter1_summary, chapter2_summary
 from chapter2 import Chapter2Progress, CHAPTER2_COUNTRIES, CHAPTER2_SCENARIOS, is_finished
 
 REQUEST_LABELS = {'new':'신규 요청','review':'검토 중','waiting':'대기',
@@ -321,7 +322,8 @@ class GameSession:
         return {'company':run.mission['company_name'], 'task':run.mission['title'], 'score':s.score,
                 'on_time':run.terms['completed'] <= run.terms['due'] if run.terms else None,
                 'gpu':s.gpu_used, 'power':s.power_used, 'servers':statuses,
-                'feedback':run.last_feedback, 'request_id':run.request['id'], 'playthrough_id':run.playthrough_id}
+                'feedback':run.last_feedback, 'request_id':run.request['id'], 'playthrough_id':run.playthrough_id,
+                'summary':chapter1_summary({'score':s.score,'gpu':s.gpu_used,'power':s.power_used}, run)}
 
     # ---- Chapter 2 -------------------------------------------------------------------------
     def _validate_chapter2(self):
@@ -752,10 +754,15 @@ class GameSession:
         evaluation = self.chapter2_evaluation()
         for job, scored in zip(jobs, evaluation['jobs']):
             job.update(eval_score=scored['score'], state=scored['state'], reason=scored['reason'])
-        return {'jobs': jobs, 'concurrent': concurrent, 'servers': statuses, 'decisions': decisions,
-                'practice': bool(story.practice), 'mission': evaluation['mission'], 'overall': evaluation['overall'],
-                'failure': deepcopy(story.chapter2.failure),
-                'highlights': self._chapter2_success_lines(jobs, concurrent) if evaluation['mission'] == 'success' else []}
+        result = {'jobs': jobs, 'concurrent': concurrent, 'servers': statuses, 'decisions': decisions,
+                  'practice': bool(story.practice), 'mission': evaluation['mission'], 'overall': evaluation['overall'],
+                  'failure': deepcopy(story.chapter2.failure),
+                  'highlights': self._chapter2_success_lines(jobs, concurrent) if evaluation['mission'] == 'success' else []}
+        # v0.9-2b: 요약표용 값. 모두 위 기록에서 계산하며 저장하지 않습니다.
+        for job in jobs:
+            job['deadline'] = job_summary(self.runs[job['request_id']])['deadline']
+        result['summary'] = chapter2_summary(result)
+        return result
 
     def _chapter2_success_lines(self, jobs, concurrent):
         """성공했을 때 어떤 운영 모드·배정 위치·시간으로 기한을 지켰는지 저장된 기록만으로 설명합니다."""
@@ -1212,7 +1219,7 @@ class GameSession:
             if status == 'rejected':
                 if run.terms:
                     run.terms['closed'] = self.minute
-                self._feedback(run,'회신과 거절 사유를 확인했습니다. 이번 요청은 종료하겠습니다.', 'customer_reject')
+                self._feedback(run, customer_reaction(run, 'rejected'), 'customer_reject')
 
     def _finish_if_needed(self, run):
         s = run.state
@@ -1234,9 +1241,8 @@ class GameSession:
             self.db.change_request_status(run.request['id'],'completed')
             self._refresh_request(run)
             self._emit(run,'result',s.result_text+f' GPU {s.gpu_used} / 전력 {s.power_used} 반환.')
-            self._feedback(run,('작업 완료는 확인했지만 예상 일정보다 지연되었습니다. 다음 작업에서는 일정 준수를 부탁드립니다.' if late else
-                           '작업 완료를 확인했습니다. 감사합니다.') if s.succeeded else
-                           '작업이 중단되었습니다. 장애 사실과 복구 계획을 알려주시기 바랍니다.',
+            # v0.9-2b: 실제 결과(기한 준수/초과/실패)에 맞는 고객 반응. 종료 시점에 한 번만 기록합니다.
+            self._feedback(run, customer_reaction(run, outcome_key(run)),
                            'customer_complete' if s.succeeded else 'customer_failure')
 
     def deadline_summary(self, run):
@@ -1274,7 +1280,7 @@ class GameSession:
             run.state.phase = 'ready'
             t.update(expired=True, completed=self.minute, evaluation=0)
             self._emit(run, 'unprocessed', reason+' · 요청 평가 0점. 실행 실패와 별도로 기록합니다.')
-            self._feedback(run,'최종 배정 기한까지 작업이 시작되지 않아 요청을 철회합니다. 미처리로 기록해 주세요.', 'customer_expired')
+            self._feedback(run, customer_reaction(run, 'expired'), 'customer_expired')
             return
         for key, applies, text in checks:
             if applies and key not in t['alerts']:

@@ -13,6 +13,7 @@ from chapter_dialog import ChapterCompleteDialog, Chapter2CompleteDialog
 from story_dialog import StoryDialogueDialog, StoryReviewDialog
 from story_slots import StorySlots
 from tutorial_highlight import TutorialHighlight
+from result_summary import free_result_lines
 from story_feedback import StoryFeedbackDialog, FEEDBACK
 from request_summary import request_summary
 from ui import (BG, PANEL, BORDER, TEXT, MUTED, CYAN, GREEN, RED, AMBER, FONT,
@@ -490,6 +491,11 @@ class SimulatorApp:
             self.action_hint.configure(text=delay_reason)
         else:
             self.action_hint.configure(text=self.action_hint.cget('text')+'\n'+self.session.deadline_summary(self.session.current))
+        if self.session.mode == 'free':
+            # v0.9-2b: 팝업 없이 운영 패널에 실제 결과 요약을 덧붙입니다. 끝나지 않은 요청에는 표시하지 않습니다.
+            summary = free_result_lines(self.session.current)
+            if summary:
+                self.action_hint.configure(text=self.action_hint.cget('text')+'\n── 결과 요약 ──\n'+'\n'.join(summary))
         options = []
         if r['status'] in ('new','review','waiting'):
             options = [('start','배정하고 작업 시작',lambda: self.choose_plan(self.plan_var.get())),

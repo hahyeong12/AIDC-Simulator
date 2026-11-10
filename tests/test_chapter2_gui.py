@@ -113,8 +113,14 @@ class PracticeAndRetryGuiTests(unittest.TestCase):
         dialog = app.chapter_window
         self.assertIn('retry', dialog.buttons)
         self.assertIn('주요 운영 결정', dialog.full_text)
-        self.assertEqual(dialog.verdict.cget('text'), 'CHAPTER 2 SUCCESS')
+        self.assertEqual(dialog.verdict.cget('text'), 'MISSION SUCCESS')
         self.assertIn('기한을 지킨 방법', dialog.full_text)      # v0.9-2a-4 성공 설명(작성만, 미실행)
+        # v0.9-2b: 요약표 우선 구조(작성만, 미실행). 상세 기록은 처음에 접혀 있고 버튼으로 펼칩니다.
+        self.assertEqual(dialog.stats['성공 고객'].cget('text'), '2 / 2')
+        self.assertEqual(len(dialog.table_cells), 2)
+        self.assertFalse(dialog.summary.winfo_ismapped())
+        dialog.detail_button.invoke(); self.root.update()
+        self.assertTrue(dialog.summary.winfo_ismapped())
         app.db_factory = lambda path: Database(':memory:')
         dialog.buttons['retry'].invoke(); self.root.update()
         fresh = self.selector.app if self.selector.app is not None else app.mode_selector.app
@@ -170,7 +176,7 @@ class FailureFeedbackGuiTests(unittest.TestCase):
             s.advance_time(10)
         self.app.refresh(); self.app.show_chapter_complete(); self.root.update()
         dialog = self.app.chapter_window
-        self.assertEqual(dialog.verdict.cget('text'), 'CHAPTER 2 FAILED')
+        self.assertEqual(dialog.verdict.cget('text'), 'MISSION FAILED')
         self.assertIn('50/100', dialog.full_text)
         self.assertNotIn('COMPLETE', dialog.verdict.cget('text'))
         self.assertIn('retry', dialog.buttons)
