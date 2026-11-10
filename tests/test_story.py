@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import tkinter as tk
 import unittest
+from tests.support import start_via_dialog
 from unittest.mock import patch
 
 from database import Database, DB_PATH, STORY_DB_PATH
@@ -430,7 +431,7 @@ class StoryGuiTests(unittest.TestCase):
         self.prepare(); a = self.app
         with patch.object(self.db, 'save_runtime', side_effect=OSError('저장 실패')):
             with patch('main.messagebox.showerror') as error:
-                a.action_buttons['start'].invoke(); self.root.update()
+                start_via_dialog(a); self.root.update()
         error.assert_called_once()
         self.assertEqual(a.session.story.step, 'allocation')
         self.assertEqual(a.center.gpu_used, 0)
@@ -480,7 +481,7 @@ class StoryGuiTests(unittest.TestCase):
                               a.arrival_notice, *a.time_buttons.values(), *a.action_buttons.values()))
             self.assert_fits((a.story_window.bubble, a.story_window.next_button, a.story_window.skip_button))
         self.prepare()
-        a.action_buttons['start'].invoke(); self.root.update()
+        start_via_dialog(a); self.root.update()
         for width, height in ((1000, 650), (1280, 680), (1366, 768)):
             self.root.geometry(f'{width}x{height}'); self.root.update()
             self.assert_fits((a.story_bar, a.story_objective, a.controls, a.resources.preview,

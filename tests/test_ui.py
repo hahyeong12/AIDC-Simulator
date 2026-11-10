@@ -2,6 +2,7 @@
 import sqlite3
 import tkinter as tk
 import unittest
+from tests.support import start_via_dialog
 from unittest.mock import patch
 from tests.support import start_with_consent
 from database import Database
@@ -25,8 +26,8 @@ class GuiTests(unittest.TestCase):
     def test_customer_cards_and_actual_buttons_update_shared_resources(self):
         a=self.app; a.next_request(); a.next_request()
         a.session.propose_alternative(); self.assertTrue(a.session.review_alternative())
-        a.select_request(2); a.action_buttons['start'].invoke()
-        a.select_request(3); a.action_buttons['start'].invoke()
+        a.select_request(2); start_via_dialog(a)
+        a.select_request(3); start_via_dialog(a)
         self.assertEqual((a.center.gpu_used,a.center.power_used),(9,10))
         self.assertEqual(a.session.servers.gpu_used,9)
         a.select_request(1); a.plan_var.set('economy'); a.preview_plan()

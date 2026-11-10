@@ -3,6 +3,7 @@ from copy import deepcopy
 import sqlite3
 import tkinter as tk
 import unittest
+from tests.support import start_via_dialog
 from unittest.mock import patch
 
 from tests.support import start_with_consent, start_legacy_plan
@@ -263,7 +264,7 @@ class UsabilityGuiTests(unittest.TestCase):
         self.assertFalse(hasattr(app.resources, 'preview_bar'))
         self.assertEqual(app.action_buttons['start'].cget('state'), 'disabled')
         app.session.propose_alternative(); self.assertTrue(app.session.review_alternative()); app.refresh()
-        app.action_buttons['start'].invoke()
+        start_via_dialog(app)
         self.assertEqual(app.resources.preview_title.cget('text'), '현재 작업 점유 자원')
         self.assertIn('현재 작업 GPU 4 / 전력 4', app.resources.preview.cget('text'))
         self.assertNotIn('가용', app.resources.preview.cget('text'))

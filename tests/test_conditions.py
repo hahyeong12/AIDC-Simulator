@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import tkinter as tk
 import unittest
+from tests.support import start_via_dialog
 from unittest.mock import patch
 
 from database import Database
@@ -398,7 +399,7 @@ class ConditionGuiTests(unittest.TestCase):
         self.assertIn('고객 허용 모드', a.mode_buttons['economy'].cget('text'))
         self.assertNotIn('propose', a.action_buttons)
         self.economy()
-        a.action_buttons['start'].invoke()
+        start_via_dialog(a)
         self.assertEqual((a.state.plan, a.center.gpu_used, a.center.power_used), ('economy', 4, 3))
         self.assertEqual(a.session.current.proposals, [])
         self.assertEqual(self.errors, [])

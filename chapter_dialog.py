@@ -10,6 +10,7 @@ from tkinter.scrolledtext import ScrolledText
 from story import chapter2_failure_pages
 from ui import BG, PANEL, CYAN, MUTED, TEXT, FONT, RED, GREEN, ActionButton, label
 from story_portraits import draw_portrait
+from scroll_area import ScrollArea
 from window_placement import center_dialog
 
 
@@ -52,8 +53,13 @@ class ChapterCompleteDialog(tk.Toplevel):
                           + '서버 상태: '+' / '.join(f'{key} {value}' for key, value in result['servers'].items())
                           + f'\n고객 완료 안내: {result["feedback"]}')
         # 결과 요약표를 먼저, 선배 설명은 그 아래에 둡니다.
-        self.summary = tk.Frame(self, bg=PANEL)
-        self.summary.grid(row=1, sticky='ew', padx=22)
+        # 가운데만 스크롤하고 아래 버튼 영역은 항상 보이게 합니다(v0.9-2b-1).
+        self.scroll = ScrollArea(self)
+        self.scroll.grid(row=1, sticky='nsew')
+        self.rowconfigure(1, weight=1)
+        body = self.scroll.body
+        self.summary = tk.Frame(body, bg=PANEL)
+        self.summary.grid(row=0, sticky='ew', padx=22)
         self.summary.columnconfigure(1, weight=1)
         self.summary_cells = {}
         for index, (name, value) in enumerate(result.get('summary', [])):
@@ -61,19 +67,19 @@ class ChapterCompleteDialog(tk.Toplevel):
             cell = label(self.summary, value, 11, GREEN if name == '운영 점수' else TEXT, True, anchor='w')
             cell.grid(row=index, column=1, sticky='w', pady=2)
             self.summary_cells[name] = cell
-        box, self.mentor_portrait, self.mentor_note = _mentor_box(self, '[선배 엔지니어]', [
+        box, self.mentor_portrait, self.mentor_note = _mentor_box(body, '[선배 엔지니어]', [
             '고객 요청을 확인하고, 서버를 고르고, 모드를 정해 시작한 것이 첫 업무의 전체 흐름입니다.',
             '완료되면 쓰던 GPU와 전력이 서버로 돌아옵니다. 앞으로 모든 업무의 기본이 됩니다.'])
-        box.grid(row=2, sticky='ew', padx=22, pady=(10, 0))
-        self.customer_reply = label(self, '고객 안내 · '+str(result['feedback']), 9, MUTED, justify='left', wraplength=700)
-        self.customer_reply.grid(row=3, sticky='w', padx=22, pady=(6, 0))
+        box.grid(row=1, sticky='ew', padx=22, pady=(10, 0))
+        self.customer_reply = label(body, '고객 안내 · '+str(result['feedback']), 9, MUTED, justify='left', wraplength=700)
+        self.customer_reply.grid(row=2, sticky='w', padx=22, pady=(6, 0))
         notice = ('다음에는 여러 고객의 요청이 동시에 들어옵니다. [Chapter 2 시작]으로 일본·미국 고객의 요청을 비교하고 서버를 배정해 보세요.\n'
                   '기존 Chapter 1 기록은 그대로 보존됩니다.' if start_chapter2 is not None else
                   '다음에는 여러 고객 요청과 네트워크 장애도 경험하게 됩니다.\nChapter 2는 이후 개발 예정입니다. 지금은 자유 운영을 이어가실 수 있습니다.')
-        self.next_notice = label(self, notice, 10, MUTED, justify='left', wraplength=700)
-        self.next_notice.grid(row=4, sticky='w', padx=22, pady=8)
+        self.next_notice = label(body, notice, 10, MUTED, justify='left', wraplength=700)
+        self.next_notice.grid(row=3, sticky='w', padx=22, pady=8)
         buttons = tk.Frame(self, bg=BG)
-        buttons.grid(row=5, sticky='ew', padx=22, pady=(0, 10))
+        buttons.grid(row=2, sticky='ew', padx=22, pady=(6, 10))
         buttons.columnconfigure((0, 1), weight=1)
         self.buttons = {}
         for index, (key, text, command) in enumerate((
@@ -86,7 +92,7 @@ class ChapterCompleteDialog(tk.Toplevel):
             button = ActionButton(buttons, 'Chapter 2 시작 · 여러 고객 요청', start_chapter2)
             button.grid(row=2, column=0, columnspan=2, sticky='ew', padx=4, pady=2)
             self.buttons['chapter2'] = button
-        center_dialog(self, parent, size=(760, 580), minimum=(700, 500))
+        center_dialog(self, parent, size=(760, 580), minimum=(640, 400))
 
 
 class Chapter2CompleteDialog(tk.Toplevel):
@@ -143,7 +149,11 @@ class Chapter2CompleteDialog(tk.Toplevel):
         self.verdict_note = label(top, note, 10, TEXT, anchor='w', justify='left', wraplength=560)
         self.verdict_note.grid(row=2, column=0, sticky='w')
 
-        stats = tk.Frame(self, bg=PANEL)
+        self.scroll = ScrollArea(self)
+        self.scroll.grid(row=1, sticky='nsew')
+        self.rowconfigure(1, weight=1)
+        body = self.scroll.body
+        stats = tk.Frame(body, bg=PANEL)
         stats.grid(row=1, sticky='ew', padx=22, pady=(4, 6))
         stats.columnconfigure(1, weight=1)
         self.stats = {}
@@ -154,7 +164,7 @@ class Chapter2CompleteDialog(tk.Toplevel):
             self.stats[name] = label(stats, value, 10, TEXT, True, anchor='w')
             self.stats[name].grid(row=index, column=1, sticky='w', pady=1)
 
-        table = tk.Frame(self, bg=PANEL)
+        table = tk.Frame(body, bg=PANEL)
         table.grid(row=2, sticky='ew', padx=22)
         for column, weight in enumerate((2, 2, 3, 2, 2)):
             table.columnconfigure(column, weight=weight)
@@ -176,7 +186,7 @@ class Chapter2CompleteDialog(tk.Toplevel):
                 row_cells.append(cell)
             self.table_cells.append(row_cells)
 
-        self.key_decisions = label(self, '주요 운영 결정\n· 전략: '+summary.get('strategy', '')+'\n· 배정: '+summary.get('arrangement', '')
+        self.key_decisions = label(body, '주요 운영 결정\n· 전략: '+summary.get('strategy', '')+'\n· 배정: '+summary.get('arrangement', '')
                                    + '\n· 자원: '+summary.get('resources', '')+'\n· 결과: '+summary.get('verdict', '')
                                    + '\n· 평가: '+('미션 성공' if success else '미션 실패'),
                                    10, TEXT, justify='left', anchor='w')
@@ -185,19 +195,18 @@ class Chapter2CompleteDialog(tk.Toplevel):
         analysis = ([page.text for page in chapter2_failure_pages(result['failure'])[:-2]][:4] if (not success and result.get('failure'))
                     else list(result.get('highlights') or [])[:4])
         self.mentor_lines = analysis or ['분석할 실패·성공 기록이 없습니다.']
-        box, self.mentor_portrait, self.mentor_label = _mentor_box(self, '[선배 엔지니어의 분석]', self.mentor_lines)
+        box, self.mentor_portrait, self.mentor_label = _mentor_box(body, '[선배 엔지니어의 분석]', self.mentor_lines)
         box.grid(row=4, sticky='ew', padx=22, pady=(6, 2))
 
         self.detail_shown = False
-        self.detail_button = ActionButton(self, '상세 기록 보기 ▼', self.toggle_detail)
+        self.detail_button = ActionButton(body, '상세 기록 보기 ▼', self.toggle_detail)
         self.detail_button.grid(row=5, sticky='w', padx=22, pady=(6, 2))
-        self.summary = ScrolledText(self, wrap='word', height=9, font=(FONT, 10), bg=PANEL, fg=TEXT, bd=0, padx=12, pady=10)
+        self.summary = ScrolledText(body, wrap='word', height=9, font=(FONT, 10), bg=PANEL, fg=TEXT, bd=0, padx=12, pady=10)
         self.summary.insert('1.0', self.full_text)
         self.summary.configure(state='disabled')
-        self.rowconfigure(6, weight=1)
 
         buttons = tk.Frame(self, bg=BG)
-        buttons.grid(row=7, sticky='ew', padx=22, pady=(6, 10))
+        buttons.grid(row=2, sticky='ew', padx=22, pady=(6, 10))
         buttons.columnconfigure((0, 1, 2, 3), weight=1)
         self.buttons = {}
         for index, (key, text, command) in enumerate((
@@ -210,7 +219,7 @@ class Chapter2CompleteDialog(tk.Toplevel):
             button = ActionButton(buttons, 'Chapter 2 다시 도전 · 새 슬롯에서 처음부터 (현재 기록은 보존)', retry)
             button.grid(row=1, column=0, columnspan=4, sticky='ew', padx=3, pady=2)
             self.buttons['retry'] = button
-        center_dialog(self, parent, size=(820, 640), minimum=(720, 520))
+        center_dialog(self, parent, size=(820, 640), minimum=(640, 400))
 
     def toggle_detail(self):
         """긴 서버별 배정·대기 기록은 접어 두었다가 필요할 때만 펼칩니다. 조회 전용이며 게임 상태를 바꾸지 않습니다."""

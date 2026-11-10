@@ -1,4 +1,4 @@
-"""AIDC Simulator v0.9-2a-3: 첫 출근부터 업무 완료와 모드 전환까지."""
+"""AIDC Simulator: 첫 출근부터 Chapter 2, 모드 전환과 결과 보고까지."""
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -14,6 +14,7 @@ from story_dialog import StoryDialogueDialog, StoryReviewDialog
 from story_slots import StorySlots
 from tutorial_highlight import TutorialHighlight
 from result_summary import free_result_lines
+from version import VERSION
 from story_feedback import StoryFeedbackDialog, FEEDBACK
 from request_summary import request_summary
 from ui import (BG, PANEL, BORDER, TEXT, MUTED, CYAN, GREEN, RED, AMBER, FONT,
@@ -25,7 +26,7 @@ class SimulatorApp:
     def __init__(self, root, db=None, db_factory=Database, story_slots=None, **session_options):
         self.root = root
         self.db_factory, self.closed, self.transitioning = db_factory, False, False
-        root.title('AIDC Simulator v0.9-2a-3 | 울산 AI 데이터센터 관제실')
+        root.title(f'AIDC Simulator {VERSION} | 울산 AI 데이터센터 관제실')
         root.geometry(f'{min(1280, root.winfo_screenwidth()-40)}x{min(680, root.winfo_screenheight()-100)}')
         root.minsize(1000, 650)
         root.configure(bg=BG)
@@ -105,7 +106,7 @@ class SimulatorApp:
         header.grid(row=0, sticky='ew')
         label(header, 'AIDC', 22, CYAN, True).pack(side='left')
         mode_label = '스토리 모드' if self.session.story else '자유 운영 모드'
-        label(header, f'ULSAN / v0.9-2a-3 · {mode_label}', 10, bold=True).pack(side='left', padx=12)
+        label(header, f'ULSAN / {VERSION} · {mode_label}', 10, bold=True).pack(side='left', padx=12)
         self.notice_var = tk.StringVar()
         self.notice_button = ActionButton(header, 'AIDC LINK', self.open_latest_message)
         self.notice_button.pack(side='right')
@@ -170,7 +171,8 @@ class SimulatorApp:
         self.action_hint.bind('<Configure>', lambda e: self.action_hint.configure(wraplength=max(300, e.width-5)))
         modes = tk.Frame(controls, bg=PANEL)
         modes.grid(row=2, sticky='ew', pady=(0, 5))
-        label(modes, '배정 미리보기', 10, MUTED).pack(side='left', padx=(0, 10))
+        label(modes, '배정 설정 · 운영 모드', 10, MUTED).pack(side='left', padx=(0, 10))
+        self.allocation_choice = None
         self.plan_var = tk.StringVar(value='performance')
         self.mode_buttons = {}
         for key, text in (('performance', '고성능 모드'), ('economy', '절약형 모드')):
@@ -181,6 +183,9 @@ class SimulatorApp:
             button.bind('<Enter>', lambda _, k=key: self.resources.refresh(k))
             button.bind('<Leave>', lambda _: self.preview_plan())
             self.mode_buttons[key] = button
+        # 모드 오른쪽: 현재 선택한 모드와 배정안 설정 여부(실제 선택은 [배정 설정·선택] 창에서 합니다).
+        self.allocation_status = label(modes, '', 9, CYAN, anchor='w')
+        self.allocation_status.pack(side='left', padx=(8, 0))
         self.action_frame = tk.Frame(controls, bg=PANEL)
         self.action_frame.grid(row=3, sticky='ew')
         tools = tk.Frame(self.root, bg=BG, padx=12)
@@ -275,6 +280,9 @@ class SimulatorApp:
                 pass
             elif step == 'allocation' and plan_window.start_button.cget('state') != 'disabled':
                 widget = plan_window.start_button
+            elif step == 'allocation' and plan_window.plan_buttons:
+                # 아직 계획을 확인하지 않았다면 먼저 계획 카드를 직접 선택하게 합니다.
+                widget, key = plan_window.plan_buttons[0], 'plan'
             elif step == 'preview' and plan_window.plan_buttons:
                 widget, key = plan_window.plan_buttons[0], 'plan'
         elif step == 'server':
@@ -452,8 +460,11 @@ class SimulatorApp:
             if editable and (p['gpu'] > available_gpu or p['power'] > available_power):
                 status += ' · 자원 부족'
             button.configure(text=f'{p["label"]} — {status}', state='normal' if editable else 'disabled')
+        self.update_allocation_status()
         for key in ('start','retry'):
             if key in self.action_buttons:
+                # 시작할 수 없는 모드(자원 부족·고객 동의 없음)는 설정 버튼도 비활성화합니다. 이유는 모드 표시와 Inspector의
+                # [배정 계획 비교·선택]으로 열리는 설정창에서 확인할 수 있습니다.
                 allowed = fits and self.session.allocation_preview(self.session.current, self.plan_var.get())['allowed'] and (key != 'retry' or self.state.retry_count < 2)
                 self.action_buttons[key].configure(state='normal' if allowed else 'disabled')
         self.update_tutorial_highlight()
@@ -472,7 +483,7 @@ class SimulatorApp:
         eta = getattr(s, 'remaining_minutes', 0)
         self.action_hint.configure(text=f'{self.mission["title"]}  |  진행 {getattr(s,"progress",0):.0f}% · 예상 잔여 {eta}분 (장애·복구 지연 제외)')
         if s.phase in ('ready','accepted'):
-            self.action_hint.configure(text='아직 자원이 배정되지 않았습니다. 모드를 확인한 뒤 [배정하고 작업 시작]을 선택하세요.')
+            self.action_hint.configure(text='아직 자원이 배정되지 않았습니다. [배정 설정·선택]에서 운영 모드와 서버 배정안을 확인한 뒤 작업을 시작하세요.')
             if self.session.current.proposals:
                 proposal = self.session.current.proposals[-1]
                 status = {'pending':'고객 답변 대기 · 시작 전 답변 확인', 'accepted':'고객 동의 · 절약형으로 시작 가능',
@@ -498,7 +509,7 @@ class SimulatorApp:
                 self.action_hint.configure(text=self.action_hint.cget('text')+'\n── 결과 요약 ──\n'+'\n'.join(summary))
         options = []
         if r['status'] in ('new','review','waiting'):
-            options = [('start','배정하고 작업 시작',lambda: self.choose_plan(self.plan_var.get())),
+            options = [('start','배정 설정·선택',self.open_allocation_plans),
                        ('propose','대안 제시',self.propose_alternative),
                        ('wait','요청 대기',self.wait_request), ('reject','거절 · 사유',self.show_rejection)]
             if self.session.current.proposals and self.session.current.proposals[-1]['status'] in ('pending','accepted'):
@@ -841,7 +852,27 @@ class SimulatorApp:
             self.resources.show_preview()
         return success
     def choose_plan(self, key):
+        """프로그램/테스트용 직접 시작. 화면의 시작 흐름은 반드시 [배정 설정·선택] 창을 거칩니다."""
         return self._perform(lambda: self.session.choose_plan(key))
+    def update_allocation_status(self):
+        """[배정 설정·선택] 옆에 현재 모드와 배정안 설정 여부를 간결하게 보여 줍니다."""
+        if not hasattr(self, 'allocation_status') or self.closed:
+            return
+        run, key = self.session.current, self.plan_var.get()
+        if run.state.allocated or run.request['status'] not in ('new', 'review', 'waiting'):
+            self.allocation_status.configure(text='')
+            return
+        choice = self.allocation_choice
+        valid = (choice is not None and choice[0] == run.request['id'] and choice[1] == key and choice[3] == self.session.minute)
+        plan = '자동 추천' if valid and choice[2] is None else f'배정안 {choice[2]+1}' if valid else None
+        self.allocation_status.configure(text=f'선택 모드: {run.state.plans[key]["label"]} · 배정안: '
+                                         + (f'{plan} 확인됨 · 설정창에서 시작' if plan else '설정 전'))
+    def remember_allocation_choice(self, mode, index):
+        self.allocation_choice = (self.session.selected_id, mode, index, self.session.minute)
+        self.update_allocation_status()
+    def change_allocation_mode(self, mode):
+        self.plan_var.set(mode)
+        self.preview_plan()
     def open_allocation_plans(self):
         if self.allocation_window is not None and self.allocation_window.winfo_exists():
             self.allocation_window.lift()
@@ -852,7 +883,8 @@ class SimulatorApp:
             self.root, self.session, self.plan_var.get(),
             lambda mode, parts: self._perform(lambda: self.session.choose_plan(mode, server_plan=parts)),
             on_review=self.review_allocation_plan if self.session.story else None,
-            on_reload=self.update_tutorial_highlight if self.session.story else None)
+            on_reload=self.update_tutorial_highlight if self.session.story else None,
+            on_mode=self.change_allocation_mode, on_choice=self.remember_allocation_choice)
         if self.session.story and self.story_window is not None and self.story_window.winfo_exists():
             self.story_window.destroy()
         if self.session.story:
@@ -1011,7 +1043,7 @@ class ModeSelection:
         self.preferred_story = preferred_story
         self.starting = False
         root.protocol('WM_DELETE_WINDOW', root.destroy)
-        root.title('AIDC Simulator v0.9-2a-3 | 모드 선택')
+        root.title(f'AIDC Simulator {VERSION} | 모드 선택')
         if root.winfo_width() <= 1:
             root.geometry('1000x650')
         root.minsize(1000, 650)
@@ -1063,7 +1095,7 @@ class ModeSelection:
         self.story_buttons['continue'].pack(fill='x')
         self.story_buttons['back'] = ActionButton(self.story_panel, '돌아가기', self.show_modes)
         self.story_buttons['back'].pack(anchor='w', pady=(16, 0))
-        self.version_label = label(self.content, 'v0.9-2a-3 · 현재 스토리는 Chapter 2까지 제공됩니다.', 10, MUTED)
+        self.version_label = label(self.content, f'{VERSION} · 현재 스토리는 Chapter 2까지 제공됩니다.', 10, MUTED)
         self.version_label.pack(anchor='w', pady=(14, 0))
 
     def layout_content(self, event):

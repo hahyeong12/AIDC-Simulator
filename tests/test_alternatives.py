@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import tkinter as tk
 import unittest
+from tests.support import start_via_dialog
 from unittest.mock import patch
 
 from database import Database
@@ -372,7 +373,7 @@ class AlternativeGuiTests(unittest.TestCase):
         self.assertIn('동의합니다', app.message_window.bubble.get('1.0', 'end'))
         self.assertEqual(app.plan_var.get(), 'economy')
         self.assertEqual(app.center.gpu_used, 4)
-        app.action_buttons['start'].invoke()
+        start_via_dialog(app)
         self.assertEqual(app.state.plan, 'economy')
         self.assertEqual(app.center.gpu_used, 8)
         self.assertEqual(self.errors, [])

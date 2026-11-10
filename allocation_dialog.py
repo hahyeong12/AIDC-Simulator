@@ -1,58 +1,103 @@
-"""서버 배정 비교 창. 확정 전까지는 원장과 DB를 변경하지 않습니다."""
+"""배정 설정창: 운영 모드 선택 → 서버 배정안 검토 → 최종 확인 후 작업 시작.
+선택·모드 변경·재조회는 원장과 DB를 변경하지 않으며, [선택한 계획으로 작업 시작]만 실제 배정을 요청합니다."""
 import tkinter as tk
 
 from server_resources import SERVERS
 from server_console import server_views
+from scroll_area import ScrollArea
+from version import VERSION
 from window_placement import center_dialog
 from server_widgets import (BG, PANEL, EDGE, TEXT, MUTED, CYAN, RED, FONT,
                             gpu_module, reset_hardware, ink)
 
 
+def start_blocker(has_options, confirmed, migration, loaded_signature, current_signature):
+    """작업을 시작할 수 없는 이유(없으면 None). 창 없이 검증할 수 있는 순수 함수입니다.
+    운영 모드와 배정안(자동 추천 포함)을 직접 선택해야 하고, 창을 연 뒤 상황이 바뀌었다면 다시 확인해야 합니다."""
+    if not has_options:
+        return '시작할 수 있는 배정안이 없습니다.'
+    if not confirmed:
+        return '운영 모드와 배정안(자동 추천 포함)을 직접 선택해야 작업을 시작할 수 있습니다.'
+    if not migration and loaded_signature != current_signature:
+        return '창을 연 뒤 시간이나 서버 점유가 바뀌었습니다. [현재 자원으로 다시 확인] 후 계획을 다시 선택해 주세요.'
+    return None
+
+
 class AllocationDialog(tk.Toplevel):
-    def __init__(self, parent, session, mode, on_start, migration=False, on_review=None, on_reload=None):
+    def __init__(self, parent, session, mode, on_start, migration=False, on_review=None, on_reload=None,
+                 on_mode=None, on_choice=None):
         super().__init__(parent)
         self.session, self.mode, self.on_start = session, mode, on_start
         self.on_review, self.on_reload = on_review, on_reload
+        self.on_mode, self.on_choice = on_mode, on_choice
         self.request_id = session.selected_id
         self.migration = migration
-        self.title(('작업 이전 계획' if migration else '서버 배정 계획 비교')+' · v0.9-2a-3')
+        # 직접 고르기 전(자동 추천 포함)에는 작업을 시작할 수 없습니다. 이전 계획은 기존처럼 첫 안이 선택되어 있습니다.
+        self.confirmed = migration
+        self.title(('작업 이전 계획' if migration else '배정 설정 · 운영 모드와 서버 배정안')+' · '+VERSION)
         self.configure(bg=BG)
         self.transient(parent)
-        self.geometry('940x680')
-        self.minsize(880, 630)
+        self.geometry('940x690')
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(3, weight=1)
+        self.rowconfigure(0, weight=1)
+        # 가운데만 스크롤하고 [선택한 계획으로 작업 시작]/[닫기]는 항상 보이게 아래에 고정합니다.
+        self.scroll = ScrollArea(self, bg=BG)
+        self.scroll.grid(row=0, sticky='nsew')
+        body = self.body = self.scroll.body
+        body.columnconfigure(0, weight=1)
         self.selection = tk.IntVar(value=-1)
-        self.heading = tk.Label(self, bg=BG, fg=TEXT, font=(FONT, 11, 'bold'), anchor='w', justify='left')
+        self.mode_var = tk.StringVar(value=mode)
+        self.heading = tk.Label(body, bg=BG, fg=TEXT, font=(FONT, 11, 'bold'), anchor='w', justify='left')
         self.heading.grid(row=0, sticky='ew', padx=14, pady=(12, 4))
-        self.auto_button = tk.Radiobutton(self, text='자동 추천 · 시작 시 현재 자원으로 다시 계산',
+        self.mode_frame = tk.Frame(body, bg=BG)
+        self.mode_frame.grid(row=1, sticky='ew', padx=12, pady=(0, 4))
+        self.mode_buttons = {}
+        self.mode_rows = []
+        self.mode_reason = tk.Label(body, bg=BG, fg='#ffe08a', font=(FONT, 9), anchor='w', justify='left', wraplength=880)
+        self.mode_reason.grid(row=2, sticky='ew', padx=14)
+        if migration:
+            self.mode_frame.grid_remove()
+        self.auto_button = tk.Radiobutton(body, text='자동 추천 · 시작 시 현재 자원으로 다시 계산',
                                          variable=self.selection, value=-1, command=self.user_select,
                                          bg=BG, fg=CYAN, selectcolor=PANEL, activebackground=BG,
                                          activeforeground=CYAN, font=(FONT, 10), anchor='w')
-        self.auto_button.grid(row=1, sticky='ew', padx=12)
+        self.auto_button.grid(row=3, sticky='ew', padx=12)
         if migration:
             self.auto_button.grid_remove()
-        self.cards = tk.Frame(self, bg=BG)
-        self.cards.grid(row=2, sticky='ew', padx=12, pady=6)
-        self.canvas = tk.Canvas(self, bg=PANEL, height=110, highlightthickness=1, highlightbackground=EDGE)
-        self.canvas.grid(row=3, sticky='nsew', padx=12)
+        self.cards = tk.Frame(body, bg=BG)
+        self.cards.grid(row=4, sticky='ew', padx=12, pady=6)
+        self.canvas = tk.Canvas(body, bg=PANEL, height=200, highlightthickness=1, highlightbackground=EDGE)
+        self.canvas.grid(row=5, sticky='ew', padx=12)
         self.canvas.bind('<Configure>', lambda _: self.draw_preview())
+        self.notice = tk.Label(body, bg=BG, fg=MUTED, font=(FONT, 9), anchor='w', justify='left', wraplength=880)
+        self.notice.grid(row=6, sticky='ew', padx=12, pady=(6, 0))
+        self.change_label = tk.Label(body, bg=BG, fg='#ffe08a', font=(FONT, 9), anchor='w', justify='left', wraplength=880)
+        self.change_label.grid(row=7, sticky='ew', padx=12, pady=(4, 0))
+        self.impact_label = tk.Label(body, bg=BG, fg=CYAN, font=(FONT, 9), anchor='w', justify='left', wraplength=880)
+        self.impact_label.grid(row=8, sticky='ew', padx=12, pady=(2, 0))
+        self.summary_label = tk.Label(body, bg=BG, fg=TEXT, font=(FONT, 10, 'bold'), anchor='w', justify='left', wraplength=880)
+        self.summary_label.grid(row=9, sticky='ew', padx=12, pady=(6, 10))
         footer = tk.Frame(self, bg=BG)
-        footer.grid(row=4, sticky='ew', padx=12, pady=10)
+        footer.grid(row=1, sticky='ew', padx=12, pady=(6, 10))
         footer.columnconfigure(0, weight=1)
-        self.notice = tk.Label(footer, bg=BG, fg=MUTED, font=(FONT, 9), anchor='w', justify='left', wraplength=880)
-        self.notice.grid(row=0, columnspan=3, sticky='ew', pady=(0, 7))
         self.reload_button = self.button(footer, '현재 자원으로 다시 확인', self.reload)
-        self.reload_button.grid(row=1, column=0, sticky='w')
+        self.reload_button.grid(row=0, column=0, sticky='w')
         self.start_button = self.button(footer, '선택한 계획으로 작업 시작', self.start)
         if migration:
             self.start_button.configure(text='선택한 계획으로 이전 · 준비 10분')
-        self.start_button.grid(row=1, column=1, padx=8)
+        self.start_button.grid(row=0, column=1, padx=8)
         self.close_button = self.button(footer, '닫기', self.destroy)
-        self.close_button.grid(row=1, column=2)
+        self.close_button.grid(row=0, column=2)
+        self.bind('<Configure>', self._wrap, add='+')
         self.reload()
-        center_dialog(self, parent, size=(940, 690), minimum=(880, 640))
+        center_dialog(self, parent, size=(940, 690), minimum=(640, 420))
         self.grab_set()
+
+    def _wrap(self, event):
+        if event.widget is self:
+            width = max(300, event.width-60)
+            for widget in (self.heading, self.mode_reason, self.notice, self.change_label, self.impact_label, self.summary_label):
+                widget.configure(wraplength=width)
 
     @staticmethod
     def button(parent, text, command):
@@ -68,13 +113,18 @@ class AllocationDialog(tk.Toplevel):
         self.source = result.get('source')
         self.views = server_views(self.session, exclude_playthrough=run.playthrough_id if self.migration else None)
         self.selection.set(0 if self.migration else -1)
+        self.confirmed = self.migration       # 모드를 바꾸거나 다시 조회하면 계획을 다시 확인해야 합니다.
+        self.loaded_signature = self.signature()
         p = run.state.plans[self.mode]
+        if not self.migration:
+            self.build_mode_rows(run)
         self.heading.configure(text=f'요청 #{self.request_id} · {run.mission["company_name"]} · {p["label"]}'
                                f'  |  GPU {p["gpu"]} / 전력 {p["power"]}\n'
                                '서버별 배정과 잔여량 비교 · 수치는 GPU / 전력 순서입니다.', wraplength=900)
         if not self.migration:
             # Chapter 2: 모드별 처리 시간·기한, 두 요청의 동시 실행 가능 여부를 판단 자료로 보여 줍니다.
-            briefing = self.session.chapter2_briefing_lines(run)
+            # 모드별 시간·기한은 위의 운영 모드 선택에 있으므로 두 고객 동시 실행 가능 여부만 덧붙입니다.
+            briefing = [line for line in self.session.chapter2_briefing_lines(run) if line.startswith('두 고객')]
             if briefing:
                 self.heading.configure(text=self.heading.cget('text')+'\n'+'\n'.join(briefing))
         if self.migration:
@@ -132,13 +182,51 @@ class AllocationDialog(tk.Toplevel):
         self.auto_button.configure(state='normal' if self.options else 'disabled')
         if self.options and not self.migration and len(self.options) == 1:
             self.heading.configure(text=self.heading.cget('text')+'\n이 조건에서 의미 있게 구별되는 배정안은 하나뿐입니다.')
-        self.start_button.configure(state='normal' if self.options else 'disabled')
-        self.notice.configure(text=('선택은 자원을 점유하지 않습니다. 직접 선택한 안은 슬롯까지 그대로 적용하며, 시작 직전에 다시 검사합니다.'
-                                    if self.options else '배정 불가 · '+result['reason']+' · 조건을 확인한 후 다시 조회해 주세요.'),
+        self.start_button.configure(state='normal' if self.options and self.confirmed else 'disabled')
+        blocked = '' if self.migration else next((r['reason'] for r in self.mode_rows if r['key'] == self.mode and r['reason']), '')
+        self.notice.configure(text=('모드·배정안 선택은 자원을 점유하지 않습니다. 자동 추천을 포함해 계획을 직접 선택한 뒤 [선택한 계획으로 작업 시작]을 눌러야 시작하며, '
+                                    '직접 선택한 안은 슬롯까지 그대로 적용하고 시작 직전에 다시 검사합니다.'
+                                    if self.options else '배정 불가 · '+(blocked or result['reason'])+' · 조건을 확인한 후 다시 조회해 주세요.'),
                               fg=MUTED if self.options else RED)
         self.draw_preview()
         if self.on_reload is not None:
             self.on_reload()
+
+    def signature(self):
+        """창을 연 뒤 요청 상태나 서버 점유가 바뀌었는지 확인하기 위한 값."""
+        run = self.session.runs[self.request_id]
+        return (self.session.minute, run.request['status'], run.state.phase, tuple(sorted(self.session.servers.allocations)))
+
+    def build_mode_rows(self, run):
+        """고성능/절약형을 이 창에서 직접 고릅니다. 값은 모두 현재 엔진에서 읽습니다."""
+        self.mode_rows = self.session.allocation_mode_rows(run)
+        for child in self.mode_frame.winfo_children():
+            child.destroy()
+        self.mode_buttons = {}
+        for column, row in enumerate(self.mode_rows):
+            self.mode_frame.columnconfigure(column, weight=1, uniform='modes')
+            due = ('' if row['on_time'] is None else
+                   f' · 기한 {row["due_label"]} 준수 가능' if row['on_time'] else f' · 기한 {row["due_label"]}보다 {row["late_minutes"]}분 늦음')
+            text = (f'{row["label"]}\nGPU {row["gpu"]} / 전력 {row["power"]}\n처리 {row["minutes"]}분 → 지금 시작하면 {row["finish_label"]} 완료{due}\n'
+                    f'{row["status"]}')
+            button = tk.Radiobutton(self.mode_frame, text=text, variable=self.mode_var, value=row['key'], command=self.change_mode,
+                                    indicatoron=False, bg=PANEL, fg=TEXT if row['agreed'] else MUTED, selectcolor='#253746',
+                                    activebackground=EDGE, activeforeground=TEXT, font=(FONT, 9), justify='left', anchor='w',
+                                    padx=10, pady=6, relief='flat', highlightthickness=2, highlightbackground=EDGE)
+            button.grid(row=0, column=column, sticky='nsew', padx=3)
+            self.mode_buttons[row['key']] = button
+        current = next((r for r in self.mode_rows if r['key'] == self.mode), None)
+        self.mode_reason.configure(text=current['reason'] if current else '')
+
+    def change_mode(self):
+        """모드만 바꾸고 해당 모드의 요구량으로 배정안을 다시 계산합니다. 자원은 점유하지 않습니다."""
+        mode = self.mode_var.get()
+        if mode == self.mode:
+            return
+        self.mode = mode
+        if self.on_mode is not None:
+            self.on_mode(mode)
+        self.reload()
 
     def plan_title(self, index):
         name = '이전안' if self.migration else '배정안'
@@ -176,7 +264,13 @@ class AllocationDialog(tk.Toplevel):
 
     def user_select(self):
         """라디오/카드로 계획을 직접 고른 사용자 행동. 화면 갱신 뒤에만 검토 확인을 알립니다."""
+        self.confirmed = True
+        if self.options:
+            self.start_button.configure(state='normal')
         self.draw_preview()
+        if self.on_choice is not None and not self.migration:
+            index = self.selection.get()
+            self.on_choice(self.mode, None if index == -1 else index)
         if self.on_review is not None and not self.migration:
             self.on_review()
 
@@ -210,19 +304,30 @@ class AllocationDialog(tk.Toplevel):
                                    (f'GPU {g:+d}' if g else '', f'전력 {power:+d}' if power else '') if text))
             self.change_text = '이전 선택 대비: '+(' / '.join(changes) if changes else 'GPU 슬롯 위치 변경')
         self.previous_parts = parts
-        if not hasattr(self, 'change_label'):
-            self.change_label = tk.Label(self.notice.master, bg=BG, fg='#ffe08a', font=(FONT, 9),
-                                         anchor='w', justify='left', wraplength=880)
-            self.change_label.grid(row=2, columnspan=3, sticky='ew', pady=(4, 0))
         self.change_label.configure(text=self.change_text)
         # Chapter 2: 이 안을 선택했을 때 다른 고객 요청의 배정 가능 여부를 현재 원장으로 보여 줍니다.
-        if not hasattr(self, 'impact_label'):
-            self.impact_label = tk.Label(self.notice.master, bg=BG, fg=CYAN, font=(FONT, 9),
-                                         anchor='w', justify='left', wraplength=880)
-            self.impact_label.grid(row=3, columnspan=3, sticky='ew', pady=(2, 0))
         impacts = ([] if self.migration or not parts else
                    self.session.allocation_impacts(self.session.runs[self.request_id], parts))
         self.impact_label.configure(text=('이 안을 선택하면 → '+' / '.join(impacts)) if impacts else '')
+        self.summary_label.configure(text=self.start_summary(parts))
+
+    def start_summary(self, parts):
+        """시작 전에 선택한 모드·자원·예상 완료를 한눈에 확인하는 요약. 조회 전용입니다."""
+        if self.migration:
+            return ''
+        if not self.options:
+            return '시작할 수 없는 조건입니다. 위의 사유를 확인해 주세요.'
+        if not self.confirmed:
+            return '시작 전 확인: 운영 모드를 정하고, 자동 추천 또는 배정안 중 하나를 직접 선택해 주세요.'
+        row = next(r for r in self.mode_rows if r['key'] == self.mode)
+        index = self.selection.get()
+        where = ('자동 추천(시작 시 현재 자원으로 다시 계산 · 지금 추천: '
+                 + ', '.join(f'{s.server_id} {s.gpu}/{s.power}' for s in self.options[0])+')' if index == -1 else
+                 f'{self.plan_title(index)}: '+', '.join(f'{s.server_id} {s.gpu}/{s.power}' for s in parts)+' (선택한 슬롯 그대로 적용)')
+        due = ('' if row['on_time'] is None else
+               f' · 기한 {row["due_label"]} 준수 가능' if row['on_time'] else f' · 기한 {row["due_label"]}보다 {row["late_minutes"]}분 늦음')
+        return (f'시작 요약 · {row["label"]} · GPU {row["gpu"]} / 전력 {row["power"]}\n배정: {where}\n'
+                f'예상: 처리 {row["minutes"]}분 → {row["finish_label"]} 완료{due}')
 
     def draw_preview(self):
         if not hasattr(self, 'options'):
@@ -253,11 +358,17 @@ class AllocationDialog(tk.Toplevel):
                     c.create_rectangle(mx-5, my-5, mx+69, my+32, outline='#a97d31', width=1, tags='planned-glow')
 
     def start(self):
-        if not self.options:
-            return
-        if self.session.selected_id != self.request_id:
+        if self.options and self.session.selected_id != self.request_id:
             self.notice.configure(text='선택한 고객 요청이 변경되었습니다. 창을 닫고 해당 요청에서 다시 열어 주세요.', fg=RED)
             self.start_button.configure(state='disabled')
+            return
+        reason = start_blocker(bool(self.options), self.confirmed, self.migration,
+                               getattr(self, 'loaded_signature', None), self.signature() if not self.migration else None)
+        if reason is not None:
+            if self.options:
+                self.notice.configure(text=reason, fg=RED)
+                if not self.confirmed:
+                    self.start_button.configure(state='disabled')
             return
         index = self.selection.get()
         parts = None if index == -1 else self.options[index]

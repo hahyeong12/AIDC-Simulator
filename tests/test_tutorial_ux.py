@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import tkinter as tk
 import unittest
+from tests.support import start_via_dialog
 from unittest.mock import patch
 
 from database import Database
@@ -85,7 +86,7 @@ class TutorialGuiTests(unittest.TestCase):
         d.close_button.invoke(); self.root.update(); self.close_guide()
 
     def running(self):
-        self.allocation(); self.app.action_buttons['start'].invoke(); self.close_guide()
+        self.allocation(); start_via_dialog(self.app); self.close_guide()
 
     def assert_target(self, key, widget):
         self.assertEqual(self.h.key, key)
@@ -360,7 +361,7 @@ class TutorialGuiTests(unittest.TestCase):
         self.app.resources.compare_button.invoke(); self.root.update(); check_sizes()
         d = self.app.allocation_window; d.plan_buttons[0].invoke(); d.close_button.invoke()
         self.root.update(); self.close_guide(); check_sizes()
-        self.app.action_buttons['start'].invoke(); self.close_guide(); check_sizes()
+        start_via_dialog(self.app); self.close_guide(); check_sizes()
         self.app.time_buttons[10].invoke(); self.close_guide(); check_sizes()
         self.app.action_buttons['operations'].invoke()
         self.app.story_window.skip_button.invoke(); self.app.story_window.next_button.invoke()

@@ -317,7 +317,7 @@ class PlanDialogTests(unittest.TestCase):
         d = self.dialog()
         self.assertEqual(d.selection.get(), -1)
         expected = self.app.session.servers.plan(7, 7)
-        d.start_button.invoke(); self.root.update()
+        d.auto_button.invoke(); d.start_button.invoke(); self.root.update()
         self.assertEqual(self.app.session.current.server_allocations[-1].slices, expected)
 
     def test_no_consent_shows_reason_without_options_or_start(self):
@@ -350,7 +350,7 @@ class PlanDialogTests(unittest.TestCase):
         before = deepcopy(s.servers.allocations)
         with patch('main.messagebox.showerror') as error:
             d.start_button.invoke(); self.root.update()
-        error.assert_called_once()
+        error.assert_not_called()      # v0.9-2b-1: 창을 연 뒤 점유가 바뀌면 세션에 보내기 전에 설정창이 다시 확인을 요구합니다.
         self.assertEqual(s.servers.allocations, before)
         self.assertEqual(d.selection.get(), 0)
         self.assertEqual(d.options, old)

@@ -1094,6 +1094,36 @@ class GameSession:
         p = run.state.plans.get(key)
         return {**preview, 'options':self.servers.distinct_options(p['gpu'], p['power']) if preview['allowed'] else ()}
 
+    def allocation_mode_rows(self, run):
+        """배정 설정창이 보여 주는 운영 모드별 요약(조회 전용, 게임 상태를 바꾸지 않음).
+        GPU/전력 요구량, 지금 시작할 때의 처리 시간·완료 시각, 완료 기한 준수 여부, 고객 허용·동의 상태와
+        시작할 수 없는 이유(고객 협의가 필요한지 또는 거절됐는지 포함)를 실제 엔진 값으로 계산합니다."""
+        proposal = run.proposals[-1] if run.proposals else None
+        due = run.terms.get('due') if run.terms else None
+        rows = []
+        for key, plan in run.state.plans.items():
+            minutes = run.state.estimate_minutes(key)
+            finish = self.minute + minutes
+            agreed = self.plan_agreed(run, key)
+            status = self.mode_status(run, key)
+            reason = ''
+            if not agreed:
+                if proposal and proposal['status'] == 'pending':
+                    reason = '고객과 협의 중입니다. 고객 답변을 확인한 뒤 선택할 수 있습니다.'
+                elif proposal and key == proposal['proposed']['mode'] and proposal['status'] == 'rejected':
+                    reason = '고객이 이 운영 모드를 거절했습니다. 원래 요청 조건으로만 시작할 수 있습니다.'
+                elif status == '고객 동의 필요':
+                    reason = '고객이 허용하지 않은 모드입니다. 고객 협의(대안 제시)와 동의가 필요합니다.'
+                else:
+                    reason = '고객이 동의한 조건과 일치하지 않아 시작할 수 없습니다.'
+            rows.append({'key': key, 'label': plan['label'], 'gpu': plan['gpu'], 'power': plan['power'],
+                         'minutes': minutes, 'finish': finish, 'finish_label': game_time(finish),
+                         'due_label': game_time(due) if due is not None else None,
+                         'on_time': None if due is None else finish <= due,
+                         'late_minutes': 0 if due is None else max(0, finish-due),
+                         'agreed': agreed, 'status': status, 'reason': reason})
+        return rows
+
     def allocation_summary(self, parts):
         return '\n'.join(f'Server {s.server_id}: GPU {s.gpu} / 전력 {s.power} → '
                          f'잔여 {next(x.gpu for x in SERVERS if x.key==s.server_id)-self.servers.usage(s.server_id)[0]-s.gpu} / '

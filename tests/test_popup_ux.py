@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import tkinter as tk
 import unittest
+from tests.support import start_via_dialog
 from unittest.mock import patch
 
 from allocation_dialog import AllocationDialog
@@ -121,7 +122,7 @@ class PopupFlowTests(unittest.TestCase):
         d = self.app.open_allocation_plans(); d.plan_buttons[0].invoke(); d.close_button.invoke(); self.dismiss()
 
     def running(self):
-        self.allocation(); self.app.action_buttons['start'].invoke(); self.dismiss()
+        self.allocation(); start_via_dialog(self.app); self.dismiss()
 
     def test_story_to_action_to_success_feedback_to_next_action(self):
         self.assertEqual(self.app.story_phase, 'STORY')

@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 import tkinter as tk
 import unittest
+from tests.support import start_via_dialog
 from unittest.mock import patch
 
 from database import Database
@@ -297,7 +298,7 @@ class ServerConsoleTests(unittest.TestCase):
 
     def test_start_button_applies_preview_and_rack_click_updates_inspector(self):
         a=self.app;parts=a.session.allocation_preview(a.session.current,'performance')['slices']
-        a.action_buttons['start'].invoke();self.root.update()
+        start_via_dialog(a);self.root.update()
         self.assertEqual(a.session.servers.allocations[a.playthrough_id].slices,parts)
         x1,y1,x2,y2=a.network.rack_bounds['C'];x,y=int((x1+x2)/2),int((y1+y2)/2)
         a.network.event_generate('<Motion>',x=x,y=y);a.network.event_generate('<Button-1>',x=x,y=y);self.root.update()

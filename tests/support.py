@@ -33,3 +33,14 @@ def dismiss_story_popups(app, root):
         else:
             break
     root.update()
+
+
+def start_via_dialog(app, index=None):
+    """v0.9-2b-1: 메인 [배정 설정·선택]은 설정창을 열기만 합니다. 창에서 계획(없으면 자동 추천)을 직접 고르고 시작합니다."""
+    app.action_buttons['start'].invoke()
+    dialog = app.allocation_window
+    app.root.update()
+    (dialog.auto_button if index is None else dialog.plan_buttons[index]).invoke()
+    dialog.start_button.invoke()
+    app.root.update()
+    return dialog
