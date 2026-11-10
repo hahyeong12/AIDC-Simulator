@@ -118,6 +118,17 @@ SCENARIOS = {
                          "economy": {"label": "절약형 모드", "gpu": 3, "power": 2, "network": 5, "bonus": 5}},
                "work": 50, "window": ("우선 · 데이터 분석", 10, 140, 220),
                "incident": {"kind": "bandwidth", "at": .4, "available": 4, "backup": 4}},
+    # v0.9-3b Chapter 3b: 서버 장비 장애 교육용 구성. 장애는 작업량 40%에서 결정적으로 발생합니다(hardware_fault).
+    # 일본: GPU 3/전력 4(기존 요청 규칙). 장애 시점에서 이전 10분이면 시작 후 70분, 복구 20분이면 80분에 끝나므로 기한 75분이 둘을 가릅니다.
+    # 싱가포르: GPU 7/전력 7. 정상 서버(B·C·D)의 GPU 합계가 6이라 전체 작업 이전이 불가능하고 장비 복구만 가능합니다.
+    "ch3b_jp": {"plans": {"performance": {"label": "고성능 모드", "gpu": 3, "power": 4, "network": 3, "bonus": 15},
+                          "economy": {"label": "절약형 모드", "gpu": 2, "power": 2, "network": 2, "bonus": 5}},
+                "work": 60, "window": ("긴급 · 로봇 추론", 10, 75, 120),
+                "hardware_fault": {"server": "A", "at": .4}},
+    "ch3b_sg": {"plans": {"performance": {"label": "고성능 모드", "gpu": 7, "power": 7, "network": 5, "bonus": 15},
+                          "economy": {"label": "절약형 모드", "gpu": 4, "power": 4, "network": 3, "bonus": 5}},
+                "work": 60, "window": ("일반 · 모델 학습", 10, 150, 240),
+                "hardware_fault": {"server": "A", "at": .4}},
 }
 
 

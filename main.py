@@ -10,7 +10,7 @@ from allocation_dialog import AllocationDialog
 from server_widgets import gpu_module, reset_hardware
 from story import GUIDES, STEPS, Dialogue, chapter2_failure_pages
 from chapter_dialog import ChapterCompleteDialog, Chapter2CompleteDialog, Chapter3CompleteDialog
-from network_dialog import NetworkDiagnosisDialog, Chapter3FeedbackDialog
+from network_dialog import NetworkDiagnosisDialog, HardwareDiagnosisDialog, Chapter3FeedbackDialog
 from story_dialog import StoryDialogueDialog, StoryReviewDialog
 from story_slots import StorySlots
 from tutorial_highlight import TutorialHighlight
@@ -218,6 +218,7 @@ class SimulatorApp:
             self.story_complete_button = ActionButton(self.story_bar, 'Chapter 1 완료', self.show_chapter_complete)
             self.story_retry_button = ActionButton(self.story_bar, '이번 시도 종료 · 재도전', self.confirm_retry_chapter2, accent=AMBER)
             self.story_retry3_button = ActionButton(self.story_bar, 'Chapter 3 다시 도전', self.confirm_retry_chapter3, accent=AMBER)
+            self.story_retry3b_button = ActionButton(self.story_bar, 'Chapter 3b 다시 도전', self.confirm_retry_chapter3b, accent=AMBER)
             self.resources.book.bind('<<NotebookTabChanged>>', self.on_story_preview, add='+')
             self.resource_confirm_button = tk.Button(
                 self.resources.inspector_frame, text='GPU·전력 정보 확인', bg=PANEL, fg=CYAN,
@@ -242,15 +243,26 @@ class SimulatorApp:
             self.story_objective.configure(text=f'{story.chapter_label} · ACTION · 현재 목표: {self.session.story_objective()}')
             self.story_skip_button.configure(state='disabled' if story.tutorial_completed else 'normal')
             self.resource_confirm_button.configure(state='normal' if story.step == 'resources' else 'disabled')
-            if story.chapter3 is None and story.chapter2 is not None and self.session.chapter2_retry_available:
+            if story.chapter3 is None and story.chapter3b is None and story.chapter2 is not None and self.session.chapter2_retry_available:
                 self.story_retry_button.grid(row=0, column=3, padx=(6, 0))
             else:
                 self.story_retry_button.grid_remove()
-            if story.chapter3 is not None and self.session.chapter3_retry_available:
+            if story.chapter3 is not None and story.chapter3b is None and self.session.chapter3_retry_available:
                 self.story_retry3_button.grid(row=0, column=3, padx=(6, 0))
             else:
                 self.story_retry3_button.grid_remove()
-            if story.chapter3 is not None:
+            if story.chapter3b is not None and self.session.chapter3b_retry_available:
+                self.story_retry3b_button.grid(row=0, column=3, padx=(6, 0))
+            else:
+                self.story_retry3b_button.grid_remove()
+            if story.chapter3b is not None:
+                self.story_skip_button.grid_remove()
+                if story.chapter3b.completed:
+                    self.story_complete_button.configure(text='Chapter 3b 결과')
+                    self.story_complete_button.grid(row=0, column=2)
+                else:
+                    self.story_complete_button.grid_remove()
+            elif story.chapter3 is not None:
                 # Chapter 3(독립 연습 포함)에는 Chapter 1 건너뛰기가 없습니다. 완료한 뒤에는 결과 창을 다시 열 수 있습니다.
                 self.story_skip_button.grid_remove()
                 if story.chapter3.completed:
@@ -282,7 +294,7 @@ class SimulatorApp:
                 and self.story_objective.winfo_exists()):
             self.story_objective.configure(text=f'{story.chapter_label} · {self.story_phase} · 현재 목표: {self.session.story_objective()}')
         if (self.closed or self.transitioning or not story or story.tutorial_completed or story.chapter2 is not None
-                or story.chapter3 is not None or story.chapter_completed or story.mission_status == 'closed'
+                or story.chapter3 is not None or story.chapter3b is not None or story.chapter_completed or story.mission_status == 'closed'
                 or any(w is not None and w.winfo_exists()
                        for w in (self.story_window, self.feedback_window, self.message_window, *self.story_reviews))):
             highlight.clear()
@@ -558,12 +570,21 @@ class SimulatorApp:
             options = [('delay','고객 지연 안내',lambda: self._perform(self.session.notify_delay))]
             if self.session.hardware_servers(self.session.current) or self.session.current.migration_left:
                 options += [('fail','처리 불가 보고',lambda:self._perform(self.session.report_failure))]
+            if self.session.story and self.session.story.chapter3b is not None:
+                if self.session.hardware_servers(self.session.current):
+                    # 장비 장애: 먼저 진단(이전 가능 여부 조회) → 복구 또는 이전 중 직접 선택
+                    options.insert(0, ('hwrepair','장비 복구 · 20분',self.repair_faulted_server))
+                    options.insert(0, ('hwdiag','장비 진단',self.open_hardware_diagnosis))
+                if self.session.chapter3b_card(self.session.selected_id) is not None:
+                    options.append(('result3b','장애 결과 보기',lambda rid=self.session.selected_id: self.open_chapter3b_card(rid)))
         elif s.phase == 'finished' and not s.succeeded and not self.session.current.followup_closed:
             options = [('retry','선택 모드로 재처리',lambda: self._perform(lambda: self.session.retry(self.plan_var.get()))),
                        ('delay','고객 지연 안내',lambda: self._perform(self.session.notify_delay)),
                        ('report','처리 불가 · 최종 보고',lambda: self._perform(self.session.report_failure))]
             if self.session.chapter3_card(self.session.selected_id) is not None:
                 options.insert(0, ('result3', '장애 결과 보기', lambda rid=self.session.selected_id: self.open_chapter3_card(rid)))
+            if self.session.story and self.session.story.chapter3b is not None and self.session.chapter3b_card(self.session.selected_id) is not None:
+                options.insert(0, ('result3b', '장애 결과 보기', lambda rid=self.session.selected_id: self.open_chapter3b_card(rid)))
         else:
             options = [('restart','같은 고객의 새 요청',self.new_mission)]
         if self.session.story:
@@ -586,6 +607,11 @@ class SimulatorApp:
             self.action_buttons[key] = b
             if key in RESPONSES and self.session.chapter3_response_locked(self.session.current):
                 b.configure(state='disabled')  # 진단창을 열기 전에는 대응을 선택할 수 없습니다.
+            if key in ('hwrepair', 'migrate') and self.session.chapter3b_locked(self.session.current):
+                b.configure(state='disabled')  # 장비 진단을 열기 전에는 복구/이전을 선택할 수 없습니다.
+            if key == 'hwrepair' and not any(self.session.servers.hardware[k].state == 'FAULT'
+                                             for k in self.session.hardware_servers(self.session.current)):
+                b.configure(state='disabled')  # 이미 복구 중
 
     def _perform(self, action):
         story = self.session.story
@@ -631,7 +657,9 @@ class SimulatorApp:
             return self.story_window
         if self.session.chapter2_failure_pending:
             return self.show_chapter2_failure()
-        if story.chapter3 is not None and self.session.chapter3_pending_feedback() is not None:
+        if story.chapter3b is not None and self.session.chapter3b_pending_feedback() is not None:
+            return self.show_chapter3b_feedback()
+        if story.chapter3b is None and story.chapter3 is not None and self.session.chapter3_pending_feedback() is not None:
             return self.show_chapter3_feedback()
         if self.pending_feedback is not None:
             token, completed, anchor = self.pending_feedback
@@ -663,7 +691,8 @@ class SimulatorApp:
         if self.feedback_window is not None and self.feedback_window.winfo_exists():
             return self.feedback_window
         if (story.dialogue_event in ('arrival', 'request', 'closed', 'skipped', 'c2_briefing', 'c3_briefing',
-                                     'c3_a_diagnose', 'c3_b_start', 'c3_b_diagnose')
+                                     'c3_a_diagnose', 'c3_b_start', 'c3_b_diagnose',
+                                     'c3b_briefing', 'c3b_a_diagnose', 'c3b_b_start', 'c3b_b_diagnose')
                 and story.dialogue_event not in story.dialogue_seen):
             return self.show_story_help()
         self.update_tutorial_highlight()
@@ -786,7 +815,8 @@ class SimulatorApp:
                     'resources':('자원 정보 확인', self.confirm_story_resources),
                     'operations':('운영 상태 확인', lambda:self.confirm_story_step(self.session.confirm_story_operations)),
                     'c2_briefing':('브리핑 확인', lambda:self.confirm_story_step(self.session.confirm_chapter2_briefing)),
-                    'c3_briefing':('브리핑 확인', lambda:self.confirm_story_step(self.session.confirm_chapter3_briefing))}
+                    'c3_briefing':('브리핑 확인', lambda:self.confirm_story_step(self.session.confirm_chapter3_briefing)),
+                    'c3b_briefing':('브리핑 확인', lambda:self.confirm_story_step(self.session.confirm_chapter3b_briefing))}
         confirm = confirms.get(story.ui_step) if not story.ui_done and not story.skipped else None
         pages = [line.page() for line in story.dialogue]
         if story.step == 'operations' and not story.chapter_completed:
@@ -834,6 +864,12 @@ class SimulatorApp:
 
     def show_story_status(self):
         story = self.session.story
+        if story.chapter3b is not None:
+            state = '진행 중' if story.chapter3b_active else '완료'
+            origin = ('Chapter 3a(네트워크 장애) 기록은 그대로 보존됩니다.' if story.chapter3 is not None
+                      else '독립 연습 슬롯입니다. 이전 Chapter를 완료한 기록은 없습니다.')
+            return TextDialog(self.root, '스토리 진행 현황',
+                              f'Chapter 3b · 서버 장비 장애 · {state}\n장비 복구와 작업 이전을 자원·시간으로 비교해 선택합니다.\n{origin}')
         if story.chapter3 is not None:
             state = '진행 중' if story.chapter3_active else '완료'
             origin = ('Chapter 2 기록은 그대로 보존됩니다.' if story.chapter2 is not None
@@ -862,11 +898,18 @@ class SimulatorApp:
             return self.chapter_window
         if self.story_window is not None and self.story_window.winfo_exists():
             self.story_window.destroy()
-        if self.session.story.chapter3 is not None:
+        if self.session.story.chapter3b is not None:
+            self.chapter_window = Chapter3CompleteDialog(
+                self.root, self.session.chapter3b_result(), self.return_to_modes,
+                lambda:self.return_to_modes('free'), self.show_story_status, self.show_story_review,
+                retry=self.retry_chapter3b)
+        elif self.session.story.chapter3 is not None:
             self.chapter_window = Chapter3CompleteDialog(
                 self.root, self.session.chapter3_result(), self.return_to_modes,
                 lambda:self.return_to_modes('free'), self.show_story_status, self.show_story_review,
-                retry=self.retry_chapter3)
+                retry=self.retry_chapter3,
+                start_next=self.begin_chapter3b if not self.session.chapter3b_unlock_reason() else None,
+                next_label='Chapter 3b 시작 · 서버 장비 장애')
         elif self.session.story.chapter2 is not None:
             self.chapter_window = Chapter2CompleteDialog(
                 self.root, self.session.chapter2_result(), self.return_to_modes,
@@ -891,6 +934,83 @@ class SimulatorApp:
     def retry_chapter2(self):
         """현재 슬롯과 기록은 그대로 저장하고, 새 독립 슬롯에서 Chapter 2를 처음부터 시작합니다."""
         return self.return_to_modes('chapter2')
+
+    # ---- Chapter 3b: 서버 장비 장애 ----
+    def open_hardware_diagnosis(self):
+        """장비 진단창을 실제로 여는 행동만 진단(이전 가능 여부 조회) 확인으로 기록합니다."""
+        rid, box = self.session.selected_id, []
+        if not self._perform(lambda: box.append(self.session.view_hardware_diagnosis(rid))):
+            return None
+        if self.diagnosis_window is not None and self.diagnosis_window.winfo_exists():
+            self.diagnosis_window.destroy()
+        self.diagnosis_window = self.build_popup(HardwareDiagnosisDialog, self.root, box[0])
+        return self.diagnosis_window
+
+    def repair_faulted_server(self):
+        """장애가 난 서버의 장비 복구를 시작합니다(시간은 흐르지 않고, 시간 버튼으로 20분이 진행됩니다)."""
+        servers = self.session.hardware_servers(self.session.current)
+        faulted = [key for key in servers if self.session.servers.hardware[key].state == 'FAULT']
+        if not faulted:
+            return False
+        return self._perform(lambda: self.session.begin_server_repair(faulted[0]))
+
+    def chapter3b_card_actions(self, card):
+        if card['can_retry']:
+            return [('Chapter 3b 다시 도전', lambda: (self.close_feedback(), self.confirm_retry_chapter3b())),
+                    ('후속 처리로 돌아가기', self.close_feedback)]
+        return [('업무로 돌아가기', self.close_feedback)]
+
+    def open_chapter3b_card(self, rid):
+        card = self.session.chapter3b_card(rid)
+        if card is None or self.closed or self.transitioning:
+            return None
+        for window in (self.feedback_window, self.story_window):
+            if window is not None and window.winfo_exists():
+                window.destroy()
+        self.tutorial_highlight.clear()
+        self.feedback_window = self.build_popup(Chapter3FeedbackDialog, self.root, card, self.chapter3b_card_actions(card))
+        self.feedback_window.bind('<Destroy>', self.feedback_closed, add='+')
+        return self.feedback_window
+
+    def show_chapter3b_feedback(self):
+        key = self.session.chapter3b_pending_feedback()
+        if key is None or self.closed or self.transitioning:
+            return None
+        self.pending_feedback = None
+        window = self.open_chapter3b_card(int(key.split(':')[0]))
+        if window is None:
+            return None
+        try:
+            self.session.mark_chapter3b_feedback_seen(key)
+        except Exception as exc:
+            window.destroy()
+            messagebox.showerror('피드백 저장 오류', str(exc), parent=self.root)
+            return None
+        self.update_tutorial_highlight()
+        return window
+
+    def confirm_retry_chapter3b(self):
+        if messagebox.askyesno('Chapter 3b 다시 도전',
+                               '지금 진행은 현재 슬롯에 그대로 저장하고, 새 슬롯에서 Chapter 3b를 처음부터 다시 시작할까요?',
+                               parent=self.root):
+            return self.retry_chapter3b()
+        return False
+
+    def retry_chapter3b(self):
+        return self.return_to_modes('chapter3b')
+
+    def begin_chapter3b(self):
+        """Chapter 3a 성공 결과 화면에서 호출합니다. 3a 기록은 그대로 두고 첫 장비 장애 미션 요청만 접수합니다."""
+        if self.closed or self.transitioning:
+            return False
+        old = self.chapter_window
+        if not self._perform(self.session.start_chapter3b):
+            return False
+        if old is not None and old.winfo_exists():
+            old.destroy()
+        self.chapter_window = None
+        self.refresh()
+        return True
 
     def confirm_retry_chapter3(self):
         """플레이어가 직접 선택했을 때만 재도전합니다. 현재 슬롯과 기록은 그대로 저장되고 새 슬롯에서 시작합니다."""
@@ -953,6 +1073,8 @@ class SimulatorApp:
             self.mode_selector.new_story(2)
         elif mode == 'chapter3':
             self.mode_selector.new_story(3)
+        elif mode == 'chapter3b':
+            self.mode_selector.new_story('3b')
         elif mode is not None:
             self.mode_selector.start(mode)
         return True
@@ -969,7 +1091,7 @@ class SimulatorApp:
 
     def skip_tutorial(self):
         if (not self.session.story or self.session.story.tutorial_completed or self.session.story.chapter2 is not None
-                or self.session.story.chapter3 is not None):
+                or self.session.story.chapter3 is not None or self.session.story.chapter3b is not None):
             return False
         if messagebox.askyesno('튜토리얼 건너뛰기',
                                '교육 안내를 건너뛸까요? 고객 업무는 직접 진행하며 스토리 모드는 유지됩니다.', parent=self.root):
@@ -1237,6 +1359,12 @@ class ModeSelection:
               10, MUTED, wraplength=700, justify='left').pack(anchor='w', pady=(7, 12))
         self.story_buttons['continue3'] = ActionButton(self.story_panel, 'Chapter 3 이어하기 · 진행 중인 최근 기록', self.continue_chapter3)
         self.story_buttons['continue3'].pack(fill='x', pady=(0, 14))
+        self.story_buttons['chapter3b'] = ActionButton(self.story_panel, 'Chapter 3b 새로 시작 · 연습 (서버 장비 장애)', lambda:self.new_story('3b'))
+        self.story_buttons['chapter3b'].pack(fill='x')
+        label(self.story_panel, 'Chapter 3a를 마친 슬롯은 결과 화면의 [Chapter 3b 시작]으로 이어서 시작합니다. 연습은 이전 Chapter를 완료한 것으로 기록하지 않습니다.',
+              10, MUTED, wraplength=700, justify='left').pack(anchor='w', pady=(7, 12))
+        self.story_buttons['continue3b'] = ActionButton(self.story_panel, 'Chapter 3b 이어하기 · 진행 중인 최근 기록', self.continue_chapter3b)
+        self.story_buttons['continue3b'].pack(fill='x', pady=(0, 14))
         label(self.story_panel, '이어갈 저장 기록', 10, MUTED).pack(anchor='w')
         self.slot_choice = ttk.Combobox(self.story_panel, state='readonly', font=(FONT, 10))
         self.slot_choice.pack(fill='x', pady=7)
@@ -1264,6 +1392,8 @@ class ModeSelection:
         self.story_buttons['continue'].configure(state='normal' if self.slot_paths else 'disabled')
         self.chapter3_paths = self.story_slots.chapter3_in_progress()
         self.story_buttons['continue3'].configure(state='normal' if self.chapter3_paths else 'disabled')
+        self.chapter3b_paths = self.story_slots.chapter3b_in_progress()
+        self.story_buttons['continue3b'].configure(state='normal' if self.chapter3b_paths else 'disabled')
         self.mode_panel.pack_forget()
         self.story_panel.pack(fill='x')
 
@@ -1281,6 +1411,12 @@ class ModeSelection:
             messagebox.showerror('새 스토리 시작 오류', str(exc), parent=self.root)
             return None
         return self.start('story', path=path, fresh=True, chapter=chapter)
+
+    def continue_chapter3b(self):
+        paths = getattr(self, 'chapter3b_paths', None) or self.story_slots.chapter3b_in_progress()
+        if not paths:
+            return None
+        return self.start('story', path=paths[-1], resume=True)
 
     def continue_chapter3(self):
         """진행 중인 Chapter 3 슬롯 중 가장 최근 번호를 이어갑니다. 다른 슬롯은 건드리지 않습니다."""
@@ -1314,7 +1450,7 @@ class ModeSelection:
             if resume and not db.get_simulation():
                 raise ValueError('이 슬롯에는 이어갈 진행 기록이 없습니다. 새 스토리 시작을 이용해 주세요.')
             self.frame.pack_forget()
-            options = {'start_chapter': chapter} if chapter in (2, 3) else {}
+            options = {'start_chapter': chapter} if chapter in (2, 3, '3b') else {}
             self.app = SimulatorApp(self.root, db=db, db_factory=self.db_factory,
                                     story_slots=self.story_slots, mode=mode, **options)
         except Exception as exc:

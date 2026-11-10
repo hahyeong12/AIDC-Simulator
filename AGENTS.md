@@ -23,7 +23,7 @@
 - 프로젝트명: AIDC Simulator
 - 기술: Python, Tkinter GUI, SQLite 데이터베이스
 - 목적: 가상의 울산 AI 데이터센터를 운영하는 미션 기반 시뮬레이션 게임
-- 현재 버전: v0.9-3a-2 장애 복구 후 정상 운영 복귀(v0.9-3a-1 Chapter 3 UI·교육 흐름 개선, v0.9-3a: 경로 단절/대역폭 부족 진단·대응). 자유 운영·Chapter 1·2 규칙 유지. 비GUI 테스트 통과, 모든 Tk 테스트는 미실행
+- 현재 버전: v0.9-3b Chapter 3b 서버 장비 장애 교육(v0.9-3a-2 장애 복구 후 정상 운영 복귀, v0.9-3a-1 Chapter 3 UI·교육 흐름 개선, v0.9-3a: 경로 단절/대역폭 부족 진단·대응). 자유 운영·Chapter 1·2 규칙 유지. 비GUI 테스트 통과, 모든 Tk 테스트는 미실행
 - 라이선스: MIT License, Copyright (c) 2026 hahyeong12 (`LICENSE`)
 - `main.py`: 시작 모드 선택·기존 관제실·교육 안내 및 사용자 입력 처리. `SimulatorApp(root, db=...)`는 기존 자유 운영을 유지하고 `mode='story'`로 스토리를 선택합니다.
 - 모드/스토리 시작 메뉴는 최대 너비 860px의 공통 중앙 콘텐츠 영역을 사용합니다. 스토리 버튼은 새 스토리 시작/이어하기/돌아가기 메뉴를 열며 이 단계에서 DB를 열지 않습니다.
@@ -102,6 +102,7 @@
 - v0.9-3a `chapter3.py`와 `tests/test_chapter3.py`: `Chapter3Progress`(11단계: 브리핑→A/B 각 시작·장애·진단·대응·종료), `network_diagnosis()`, 시나리오 `game.SCENARIOS['ch3_path'|'ch3_bw']`의 `incident`(결정적 40% 발생). `GameState.incident_kind`가 있을 때만 원인별 대응을 쓰며(복구=`link_ok` 그리고 필요≤가용) 없으면 기존 `resolve()` 경로를 유지합니다. 경로 단절은 우회만, 대역폭 부족은 압축만 복구합니다. `view_network_diagnosis()`로 진단창을 연 뒤에만 대응할 수 있고, `records`는 재처리와 무관하게 장애·대응 기록을 보존합니다. Chapter 2 성공 슬롯에서만 `start_chapter3()`, 독립 연습은 `start_chapter=3`(`StoryProgress.practice_chapter=3`, Chapter 1·2 기록 없음)이며 재도전은 항상 새 슬롯입니다. 스토리 JSON 선택 필드 `chapter3`/`practice_chapter`로만 저장하고 SQL은 변경하지 않습니다. `network_dialog.py`·`Chapter3CompleteDialog`·모드 메뉴의 Chapter 3 버튼은 작성만 했고 `tests/test_chapter3_gui.py`는 미실행입니다. 비GUI 47개 검증.
 - v0.9-3a-1 `tests/test_chapter3_flow.py`: 장애 안내 구조·결과 카드(`chapter3_card`, 기록 기반)·3회 실패 후 흐름(자동 이동 없음, 재처리/최종 보고 유지)·결과표를 비GUI 18개로 검증합니다. 카드/진단창/결과창 UI는 작성만 했고 `tests/test_chapter3_gui.py`는 미실행입니다.
 - v0.9-3a-2 `tests/test_chapter3_recovery.py`: 복구 준비/정상 실행 구분 표시(`recovery_status_lines`, `story_objective`)·복구 중 다른 고객 처리·저장 이어하기·실패 경로 유지를 비GUI 17개로 검증합니다. 복구 후에는 [네트워크 진단]/불필요한 지연 안내 버튼이 남지 않습니다(화면 검증은 미실행 GUI 테스트).
+- v0.9-3b `chapter3b.py`와 `tests/test_chapter3b.py`: `Chapter3bProgress`(11단계), 시나리오 `ch3b_jp`/`ch3b_sg`(`hardware_fault` 40%, Server A), 장비 진단(`hardware_diagnosis`·`view_hardware_diagnosis`)을 연 뒤에만 `begin_server_repair`/`migrate` 가능, 선택 시점 예상(`_record_hw_choice`)·결과 카드·결과표(`chapter3b_result`). 기존 하드웨어 엔진(복구 20분·이전 10분·원장 재검증)을 재사용하고 Chapter 3a 성공 슬롯에서 `start_chapter3b()`, 독립 연습은 `start_chapter='3b'`(`practice_chapter='3b'`)입니다. 기한 초과 완료만 미션 실패이며 예측으로 실패시키지 않습니다. 비GUI 29개 검증, `HardwareDiagnosisDialog`·버튼·메뉴는 작성만 했고 `tests/test_chapter3_gui.py` 3b 클래스는 미실행입니다.
 - `tests/`: 자동화 테스트
 - 테스트 명령: `python -m unittest discover -s tests -v` (Windows에서는 `py -m unittest ...`; GUI 테스트는 사용자 요청 없이 실행하지 않습니다.)
 

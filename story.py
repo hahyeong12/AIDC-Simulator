@@ -3,6 +3,7 @@ from dataclasses import dataclass, field, asdict
 
 from chapter2 import Chapter2Progress, EVENTS2
 from chapter3 import Chapter3Progress, EVENTS3
+from chapter3b import Chapter3bProgress, EVENTS3B
 
 
 LEGACY_STEPS = ('server', 'resources', 'request', 'allocation', 'time', 'complete')
@@ -226,6 +227,43 @@ def chapter3_feedback_pages(key, record):
     raise ValueError('알 수 없는 Chapter 3 피드백입니다.')
 
 
+
+# Chapter 3b: 서버 장비 장애. 선배는 살펴볼 항목만 안내하고 복구/이전 중 무엇이 맞는지는 알려 주지 않습니다.
+_HW_HELP = ('[장비 진단]에서 살펴볼 항목\n\n'
+            '① 【장애 서버】 — 어느 서버이고 어떤 상태인가?\n'
+            '② 【점유 자원】 — 영향받은 작업이 쓰는 GPU·전력은?\n'
+            '③ 【정상 서버】 — 작업을 옮길 만한 여유 자원이 있는가?\n'
+            '④ 【예상 시간】 — 복구와 이전을 하면 언제 끝나는가?\n\n'
+            '비교한 뒤 대응 방법을 직접 선택해 보세요.')
+GUIDES3B = {
+    'briefing': ('선배의 Chapter 3b 브리핑을 읽고 확인하세요.', [
+        Dialogue('mentor', '이번에는 서버 장비 자체의 장애를 다룹니다. 네트워크 장애와 달리 GPU와 서버가 멈추고, 장애가 난 서버는 새 작업을 받을 수 없어요.'),
+        Dialogue('mentor', '대응은 크게 두 가지입니다. 장비를 복구하거나, 작업을 정상 서버로 옮기거나. 어느 쪽이 나은지는 정상 서버의 여유 자원과 고객 완료 기한을 비교해서 직접 판단해 보세요.'),
+        Dialogue('system', '장비 복구는 가상 시간 20분, 작업 이전 준비는 10분입니다. 대응을 선택하는 것만으로는 시간이 흐르지 않고 시간 버튼을 눌러야 진행됩니다. 이 장의 구성은 교육용입니다.')]),
+    'a_start': ('AIDC LINK에서 일본 요청을 확인하고 [배정 설정·선택]에서 작업을 시작하세요.', [
+        Dialogue('mentor', '첫 고객 요청이 도착했습니다. 완료 기한이 빠듯한 긴급 작업이니 요청서를 읽고 작업을 시작해 보세요.')]),
+    'a_fault': ('시간 버튼으로 작업을 진행하세요. 장비 장애가 발생하면 시간이 멈춥니다.', [
+        Dialogue('mentor', '작업이 시작됐습니다. 시간을 진행하면서 지켜보세요. 이상이 생기면 진행이 멈춥니다.')]),
+    'a_diagnose': ('[장비 진단]을 열어 복구와 이전을 비교하세요.', [
+        Dialogue('mentor', '서버 장비에 장애가 발생했습니다. 고객 작업이 중단됐어요.\n\n'+_HW_HELP)]),
+    'a_respond': ('비교한 내용을 근거로 장비 복구 또는 작업 이전을 직접 선택하세요.', [
+        Dialogue('mentor', '진단 정보를 확인했네요. 이제 시간과 자원을 비교해 직접 선택하세요. 선택하는 순간에는 시간이 흐르지 않습니다.')]),
+    'a_finish': ('시간 버튼으로 작업을 끝까지 진행하세요.', [
+        Dialogue('mentor', '선택한 대응은 가상 시간으로 진행됩니다. 관제실로 돌아가 시간을 진행하며 작업이 재개되는지 확인해 보세요.')]),
+    'b_start': ('두 번째 장애 미션: 싱가포르 요청을 확인하고 작업을 시작하세요.', [
+        Dialogue('mentor', '첫 장애를 처리했네요. 이번에는 다른 고객의 큰 작업입니다. 앞서의 선택이 이번에도 통할지는 진단으로 확인하세요.')]),
+    'b_fault': ('시간 버튼으로 작업을 진행하세요. 장비 장애가 발생하면 시간이 멈춥니다.', [
+        Dialogue('mentor', '작업이 시작됐습니다. 시간을 진행하면서 지켜보세요.')]),
+    'b_diagnose': ('[장비 진단]을 열어 복구와 이전을 비교하세요.', [
+        Dialogue('mentor', '또 서버 장비에 장애가 발생했습니다. 지난번과 같은 상황이라고 단정하지 마세요.\n\n'+_HW_HELP)]),
+    'b_respond': ('비교한 내용을 근거로 장비 복구 또는 작업 이전을 직접 선택하세요.', [
+        Dialogue('mentor', '이번 진단 값을 지난번과 비교해 보세요. 선택하는 순간에는 시간이 흐르지 않습니다.')]),
+    'b_finish': ('시간 버튼으로 작업을 끝까지 진행하세요.', [
+        Dialogue('mentor', '선택한 대응은 가상 시간으로 진행됩니다. 관제실로 돌아가 시간을 진행해 주세요.')]),
+    'done': ('Chapter 3b 종료 · 결과 화면에서 두 장애의 선택과 결과를 확인하세요.', [
+        Dialogue('system', '두 장애 미션이 끝났습니다. 결과 화면에서 장애별 선택 대응, 기한 준수, 중단 시간과 운영 점수를 확인할 수 있습니다.')]),
+}
+
 _SHORT = {'reroute': '우회', 'compress': '압축', 'ignore': '유지'}
 _CAUSE_TITLE = {'path_down': '주 통신 경로 단절', 'bandwidth': '가용 대역폭 부족'}
 
@@ -293,14 +331,17 @@ class StoryProgress:
     chapter2: Chapter2Progress | None = None
     practice: bool = False  # Chapter 2/3만 독립 슬롯에서 시작한 연습. Chapter 1을 플레이한 기록으로 취급하지 않습니다.
     chapter3: Chapter3Progress | None = None
-    practice_chapter: int = 2  # 연습 슬롯이 시작한 Chapter(2 또는 3). 연습이 아니면 기본값 2
+    practice_chapter: int | str = 2  # 연습 슬롯이 시작한 Chapter(2, 3 또는 '3b'). 연습이 아니면 기본값 2
+    chapter3b: Chapter3bProgress | None = None
 
     def __post_init__(self):
         if isinstance(self.chapter2, dict):
             self.chapter2 = Chapter2Progress(**self.chapter2)
         if isinstance(self.chapter3, dict):
             self.chapter3 = Chapter3Progress(**self.chapter3)
-        if type(self.practice) is not bool or type(self.practice_chapter) is not int or self.practice_chapter not in (2, 3):
+        if isinstance(self.chapter3b, dict):
+            self.chapter3b = Chapter3bProgress(**self.chapter3b)
+        if type(self.practice) is not bool or self.practice_chapter not in (2, 3, '3b') or type(self.practice_chapter) not in (int, str):
             raise ValueError('저장된 Chapter 2 연습 표시가 올바르지 않습니다.')
         if not self.practice and self.practice_chapter != 2:
             raise ValueError('저장된 연습 Chapter 표시가 올바르지 않습니다.')
@@ -311,8 +352,15 @@ class StoryProgress:
         if self.chapter3 is not None and (
                 not isinstance(self.chapter3, Chapter3Progress)
                 or (self.practice_chapter == 3 and (not self.practice or self.chapter2 is not None))
+                or self.practice_chapter == '3b'
                 or (self.practice_chapter != 3 and (self.chapter2 is None or not self.chapter2.completed))):
             raise ValueError('저장된 Chapter 3 진행 상태가 올바르지 않습니다.')
+        # Chapter 3b는 Chapter 3a를 끝낸 슬롯 또는 독립 연습 슬롯에만 있습니다. 독립 연습에는 이전 Chapter 기록이 없습니다.
+        if self.chapter3b is not None and (
+                not isinstance(self.chapter3b, Chapter3bProgress)
+                or (self.practice_chapter == '3b' and (not self.practice or self.chapter2 is not None or self.chapter3 is not None))
+                or (self.practice_chapter != '3b' and (self.chapter3 is None or not self.chapter3.completed))):
+            raise ValueError('저장된 Chapter 3b 진행 상태가 올바르지 않습니다.')
         if self.practice and (self.chapter_completed or self.completed_steps or self.tutorial_completed
                               or self.skipped or self.first_work_completed or self.mission_status != 'pending'
                               or self.request_id is not None or self.legacy_progress):
@@ -330,7 +378,7 @@ class StoryProgress:
                 or self.selected_server not in (None, 'A', 'B', 'C', 'D')):
             raise ValueError('저장된 스토리 진행 상태가 올바르지 않습니다.')
         if (not isinstance(self.dialogue_seen, list)
-                or any(not isinstance(key, str) or key not in (*STEPS, 'closed', 'skipped', *EVENTS2, *EVENTS3) for key in self.dialogue_seen)
+                or any(not isinstance(key, str) or key not in (*STEPS, 'closed', 'skipped', *EVENTS2, *EVENTS3, *EVENTS3B) for key in self.dialogue_seen)
                 or len(set(self.dialogue_seen)) != len(self.dialogue_seen)):
             raise ValueError('저장된 대화 표시 이력이 올바르지 않습니다.')
         expected = STEPS[min(len(self.completed_steps), len(STEPS)-1)]
@@ -388,6 +436,8 @@ class StoryProgress:
             data.pop('practice')
         if data['chapter3'] is None:
             data.pop('chapter3')
+        if data['chapter3b'] is None:
+            data.pop('chapter3b')
         if data['practice_chapter'] == 2:
             data.pop('practice_chapter')  # Chapter 2 연습/이전 저장 형식을 그대로 유지합니다.
         return data
@@ -401,14 +451,22 @@ class StoryProgress:
         return self.chapter3 is not None and not self.chapter3.completed
 
     @property
+    def chapter3b_active(self):
+        return self.chapter3b is not None and not self.chapter3b.completed
+
+    @property
     def ui_done(self):
         """화면이 보는 '현재 Chapter 완료' 여부. 가장 나중에 시작한 Chapter 기준입니다."""
+        if self.chapter3b is not None:
+            return self.chapter3b.completed
         if self.chapter3 is not None:
             return self.chapter3.completed
         return self.chapter2.completed if self.chapter2 is not None else self.chapter_completed
 
     @property
     def ui_step(self):
+        if self.chapter3b is not None:
+            return 'c3b_done' if self.chapter3b.completed else 'c3b_'+self.chapter3b.step
         if self.chapter3 is not None:
             return 'c3_done' if self.chapter3.completed else 'c3_'+self.chapter3.step
         if self.chapter2 is None:
@@ -417,6 +475,8 @@ class StoryProgress:
 
     @property
     def ui_completed_steps(self):
+        if self.chapter3b is not None:
+            return ['c3b_'+key for key in self.chapter3b.completed_steps]
         if self.chapter3 is not None:
             return ['c3_'+key for key in self.chapter3.completed_steps]
         if self.chapter2 is None:
@@ -425,13 +485,15 @@ class StoryProgress:
 
     @property
     def chapter_label(self):
+        if self.chapter3b is not None:
+            return 'Chapter 3b'
         if self.chapter3 is not None:
             return 'Chapter 3'
         return 'Chapter 2' if self.chapter2 is not None else f'Chapter {self.chapter}'
 
     @property
     def dialogue_event(self):
-        if self.chapter2 is not None or self.chapter3 is not None:
+        if self.chapter2 is not None or self.chapter3 is not None or self.chapter3b is not None:
             return self.ui_step
         if self.chapter_completed:
             return 'complete'
@@ -441,6 +503,8 @@ class StoryProgress:
 
     @property
     def objective(self):
+        if self.chapter3b is not None:
+            return GUIDES3B[self.ui_step[4:]][0]
         if self.chapter3 is not None:
             return GUIDES3[self.ui_step[3:]][0]
         if self.chapter2 is not None:
@@ -457,6 +521,8 @@ class StoryProgress:
 
     @property
     def dialogue(self):
+        if self.chapter3b is not None:
+            return GUIDES3B[self.ui_step[4:]][1]
         if self.chapter3 is not None:
             return GUIDES3[self.ui_step[3:]][1]
         if self.chapter2 is not None:

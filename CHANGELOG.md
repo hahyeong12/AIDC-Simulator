@@ -1,6 +1,14 @@
 
 # AIDC Simulator 개발 기록
 
+## v0.9-3b Chapter 3b 서버 장비 장애 교육 - 2026-11-10
+
+- `game.SCENARIOS`: `ch3b_jp`(일본 3/4·작업 60·기한 75분)·`ch3b_sg`(싱가포르 7/7)와 `hardware_fault`(작업량 40%, Server A) 설정.
+- `chapter3b.py`: `Chapter3bProgress`(11단계)·장애 서버 선택·진단 표·결과 카드·선배 분석(순수 함수). 기존 `ServerHealth`/`migration_preview`/`migrate`/`begin_server_repair`를 재사용.
+- `session.py`: `_trigger_story_faults`(결정적 자동 장애, 시간 진행 중단), `_apply_server_fault` 분리, 진단 선행 조건(`chapter3b_locked`), 선택 시점 예상 기록(`_record_hw_choice`), `hardware_diagnosis`/`view_hardware_diagnosis`, 결과 카드·결과표·잠금 해제(3a 성공)·시작/연습, 첫 미션 종료 뒤 장애 서버 정비 후 두 번째 미션 접수, Chapter 3b에서 이전 불가 이유를 수치로 설명.
+- 화면: `HardwareDiagnosisDialog`, 결과 카드·결과창 재사용(`Chapter3CompleteDialog` 열/제목 일반화), 행동 버튼 [장비 진단]/[장비 복구 · 20분], 모드 메뉴의 Chapter 3b 새로 시작·이어하기, 3a 결과의 [Chapter 3b 시작], 3b에서 수동 장애 버튼 비활성.
+- 신규 `tests/test_chapter3b.py` 29개(비GUI), `tests/test_chapter3_gui.py` 보강(미실행). 규칙·점수·SQL 변경 없음.
+
 ## v0.9-3a-2 네트워크 장애 복구 후 정상 운영 복귀 - 2026-11-10
 
 - `main.render_actions`: 실행/복구 준비 중에는 [네트워크 진단] 제거(장애·재시도 상태에서만 표시). `GameSession.delay_reason`: Chapter 3 복구 준비 중에는 실제 기한 위험이 있을 때만 지연 안내 필요.

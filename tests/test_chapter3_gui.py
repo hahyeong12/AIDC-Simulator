@@ -167,6 +167,60 @@ if __name__ == '__main__':
     unittest.main()
 
 
+class Chapter3bGuiTests(unittest.TestCase):
+    """Chapter 3b 화면 연결(작성만, 미실행). 장비 진단창·복구/이전 버튼·결과 카드·메뉴 버튼을 확인합니다."""
+    def setUp(self):
+        self.root = tk.Tk(); self.addCleanup(self.root.destroy)
+        self.db = Database(':memory:'); self.addCleanup(self.db.close)
+        self.app = SimulatorApp(self.root, self.db, mode='story', start_chapter='3b', seed=5)
+        self.addCleanup(self.app.network.stop)
+        self.errors = []
+        self.root.report_callback_exception = lambda *args: self.errors.append(args)
+        self.root.update()
+        self.session = self.app.session
+        self.a = self.session.story.chapter3b.request_ids[0]
+
+    def begin_and_fault(self):
+        self.app.story_window.skip_button.invoke(); self.app.story_window.next_button.invoke(); self.root.update()
+        dismiss_story_popups(self.app, self.root)
+        self.app.open_message(self.a); self.app.message_window.destroy()
+        self.app.action_buttons['start'].invoke(); self.root.update()
+        dialog = self.app.allocation_window
+        dialog.auto_button.invoke(); dialog.start_button.invoke(); self.root.update()
+        dismiss_story_popups(self.app, self.root)
+        self.app.advance_time(60); self.root.update()
+        dismiss_story_popups(self.app, self.root)
+
+    def test_title_names_chapter_3b_and_fault_button_is_disabled(self):
+        self.assertIn('Chapter 3b', self.app.story_window.title())
+        self.assertEqual(str(self.app.resources.fault_button.cget('state')), 'disabled')
+
+    def test_repair_and_migrate_are_locked_until_the_hardware_diagnosis_is_opened(self):
+        self.begin_and_fault()
+        self.assertIn('hwdiag', self.app.action_buttons)
+        self.assertEqual(str(self.app.action_buttons['hwrepair'].cget('state')), 'disabled')
+        self.assertEqual(str(self.app.action_buttons['migrate'].cget('state')), 'disabled')
+        self.app.action_buttons['hwdiag'].invoke(); self.root.update()
+        window = self.app.diagnosis_window
+        self.assertEqual(window.cells['작업 이전'].cget('text'), '가능')
+        self.assertEqual(str(self.app.action_buttons['hwrepair'].cget('state')), 'normal')
+        self.assertEqual(self.session.servers.hardware['A'].state, 'FAULT')       # 진단이 대응을 자동 실행하지 않음
+        self.app.action_buttons['hwrepair'].invoke(); self.root.update()
+        self.assertEqual(self.session.servers.hardware['A'].state, 'REPAIRING')
+        self.assertTrue(self.app.feedback_window.winfo_exists())                   # 짧은 결과 카드
+        self.assertEqual(self.errors, [])
+
+    def test_story_menu_offers_chapter_3b(self):
+        from main import ModeSelection
+        from story_slots import StorySlots
+        import tempfile
+        root = tk.Tk(); self.addCleanup(root.destroy)
+        folder = tempfile.TemporaryDirectory(); self.addCleanup(folder.cleanup)
+        menu = ModeSelection(root, db_factory=lambda path: Database(':memory:'), story_slots=StorySlots(folder.name))
+        menu.show_story_menu(); root.update()
+        self.assertTrue({'chapter3b', 'continue3b'} <= set(menu.story_buttons))
+
+
 class Chapter3FailureCardGuiTests(unittest.TestCase):
     """대응 3회 실패 카드와 다음 행동 버튼(작성만, 미실행)."""
     def test_failed_card_offers_retry_and_follow_up_buttons(self):

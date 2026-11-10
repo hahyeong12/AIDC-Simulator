@@ -226,7 +226,7 @@ class ResultTableTests(unittest.TestCase):
         src = (ROOT / 'chapter_dialog.py').read_text(encoding='utf-8')
         tail = src[src.index('class Chapter3CompleteDialog'):]
         self.assertIn("buttons.grid(row=2", tail)
-        self.assertIn("'Chapter 3 다시 도전'", tail)
+        self.assertIn("{name} 다시 도전", tail)
         self.assertIn("('modes', '모드 선택'", tail)
         self.assertIn("('status', '진행 현황'", tail)
         self.assertIn('상세 기록 보기', tail)

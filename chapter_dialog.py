@@ -239,19 +239,21 @@ class Chapter2CompleteDialog(tk.Toplevel):
 class Chapter3CompleteDialog(tk.Toplevel):
     """Chapter 3 결과(v0.9-3a-1 압축판). 판정·성공 수 → 결과표 → 선배 평가 2~3문장 → 접힌 상세 기록.
     버튼은 스크롤 영역 밖 아래에 고정되어 창이 작아도 항상 보입니다."""
-    def __init__(self, parent, result, select_mode, start_free, status, review, retry=None):
+    def __init__(self, parent, result, select_mode, start_free, status, review, retry=None, start_next=None, next_label=''):
         super().__init__(parent, bg=BG)
         self.withdraw()
         success = result.get('mission') == 'success'
-        self.title('Chapter 3 '+('성공' if success else '실패')+' · 네트워크 장애 진단과 대응')
+        summary = result.get('summary') or {}
+        name = summary.get('name', 'Chapter 3')
+        subtitle = summary.get('subtitle', '네트워크 장애 진단과 대응')
+        self.title(f'{name} '+('성공' if success else '실패')+f' · {subtitle}')
         self.transient(parent)
         self.columnconfigure(0, weight=1)
         self.result = result
-        summary = result.get('summary') or {}
         top = tk.Frame(self, bg=BG)
         top.grid(row=0, sticky='ew', padx=22, pady=(10, 2))
         top.columnconfigure(0, weight=1)
-        label(top, 'CHAPTER 3 · 네트워크 장애 진단과 대응', 9, MUTED).grid(row=0, column=0, sticky='w')
+        label(top, f'{name.upper()} · {subtitle}', 9, MUTED).grid(row=0, column=0, sticky='w')
         self.verdict = label(top, 'MISSION SUCCESS' if success else 'MISSION FAILED', 22, GREEN if success else RED, True)
         self.verdict.grid(row=1, column=0, sticky='w')
         self.count_label = label(top, f'{summary.get("ok", 0)} / {summary.get("total", 2)}', 24, CYAN, True)
@@ -266,17 +268,18 @@ class Chapter3CompleteDialog(tk.Toplevel):
         body = self.scroll.body
         table = tk.Frame(body, bg=PANEL)
         table.grid(row=0, sticky='ew', padx=22, pady=(4, 4))
-        for column, weight in enumerate((1, 2, 5, 2, 2)):
-            table.columnconfigure(column, weight=weight)
-        for column, name in enumerate(('미션', '장애 원인', '선택 대응', '복구 결과', '점수')):
-            label(table, name, 9, MUTED, True, anchor='w').grid(row=0, column=column, sticky='w', padx=8, pady=(4, 2))
+        columns = summary.get('columns', ('미션', '장애 원인', '선택 대응', '복구 결과', '점수'))
+        for column in range(len(columns)):
+            table.columnconfigure(column, weight=(1, 2, 5, 2, 2, 2)[column] if len(columns) == 6 and column == 5 else (1, 2, 5, 2, 2)[column])
+        for column, header in enumerate(columns):
+            label(table, header, 9, MUTED, True, anchor='w').grid(row=0, column=column, sticky='w', padx=8, pady=(4, 2))
         self.table_cells = []
         for row, values in enumerate(summary.get('table', []), start=1):
-            ok = values[3] == '성공'
+            ok = values[3] in ('성공', '기한 내 완료')
             row_cells = []
             for column, text in enumerate(values):
                 color = (GREEN if ok else RED) if column == 3 else TEXT
-                cell = label(table, text, 10, color, column in (0, 3, 4), anchor='w', wraplength=240, justify='left')
+                cell = label(table, text, 10, color, column in (0, 3, len(values)-1), anchor='w', wraplength=240, justify='left')
                 cell.grid(row=row, column=column, sticky='w', padx=8, pady=3)
                 row_cells.append(cell)
             self.table_cells.append(row_cells)
@@ -285,7 +288,7 @@ class Chapter3CompleteDialog(tk.Toplevel):
         box.grid(row=1, sticky='ew', padx=22, pady=(6, 2))
 
         lines = []
-        for index, job in enumerate(result['jobs']):
+        for index, job in enumerate(result['jobs'] if not summary.get('detail_text') else ()):
             record = job['record']
             lines.append(f'미션 {"AB"[index]} · {job["country"]} {job["company"]} — {job["job"]["task"]}')
             for name, value in summary.get('rows', [[]]*2)[index]:
@@ -299,7 +302,7 @@ class Chapter3CompleteDialog(tk.Toplevel):
         if result.get('practice'):
             lines.append('이 기록은 Chapter 3 독립 연습 슬롯의 것이며 Chapter 1·2 진행·점수와 별개입니다.')
         lines.append('이 장의 네트워크 구성은 교육용이며 실제 네트워크의 모든 경우를 대표하지 않습니다.')
-        self.full_text = '\n'.join(lines)
+        self.full_text = summary.get('detail_text') or '\n'.join(lines)
         self.detail_shown = False
         self.detail_button = ActionButton(body, '상세 기록 보기 ▼', self.toggle_detail)
         self.detail_button.grid(row=2, sticky='w', padx=22, pady=(4, 2))
@@ -311,7 +314,9 @@ class Chapter3CompleteDialog(tk.Toplevel):
         buttons.grid(row=2, sticky='ew', padx=22, pady=(6, 10))
         buttons.columnconfigure((0, 1, 2), weight=1)
         self.buttons = {}
-        entries = [('retry', 'Chapter 3 다시 도전', retry)] if retry is not None else []
+        entries = [('retry', f'{name} 다시 도전', retry)] if retry is not None else []
+        if start_next is not None and success:
+            entries.insert(0, ('next', next_label, start_next))
         entries += [('modes', '모드 선택', select_mode), ('status', '진행 현황', status),
                     ('free', '자유 운영 모드 시작', start_free), ('review', '교육 내용 다시 보기', review)]
         for index, (key, text, command) in enumerate(entries):

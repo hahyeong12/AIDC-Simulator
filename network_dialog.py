@@ -103,3 +103,44 @@ class Chapter3FeedbackDialog(tk.Toplevel):
         self.close_button.pack(side='left')
         self.bind('<Escape>', lambda _: self.destroy())
         center_dialog(self, parent, size=(560, 330), minimum=(460, 280))
+
+
+class HardwareDiagnosisDialog(tk.Toplevel):
+    """Chapter 3b 장비 진단창. 복구/이전의 자원과 예상 시간을 표로 비교해 보여 주기만 하고, 대응을 자동 선택·실행하지 않습니다."""
+    def __init__(self, parent, diagnosis):
+        super().__init__(parent, bg=BG)
+        self.withdraw()
+        from chapter3b import diagnosis_rows
+        self.title('Chapter 3b | 장비 진단')
+        self.transient(parent)
+        self.columnconfigure(0, weight=1)
+        self.diagnosis = d = diagnosis
+        top = tk.Frame(self, bg=BG)
+        top.grid(row=0, sticky='ew', padx=16, pady=(8, 2))
+        label(top, 'HARDWARE DIAGNOSIS', 9, MUTED).pack(anchor='w')
+        self.summary_label = label(top, f'장애 관측: Server {d["server"]} 장비 장애 · 고객 작업 중단', 13, CYAN, True, anchor='w')
+        self.summary_label.pack(anchor='w')
+        self.scroll = ScrollArea(self)
+        self.scroll.grid(row=1, sticky='nsew')
+        self.rowconfigure(1, weight=1)
+        table = tk.Frame(self.scroll.body, bg=PANEL)
+        table.grid(row=0, sticky='ew', padx=16, pady=4)
+        table.columnconfigure(1, weight=1)
+        self.cells = {}
+        colors = {'bad': RED, 'good': GREEN, None: TEXT}
+        for row, (name, value, tone) in enumerate(diagnosis_rows(d)):
+            label(table, name, 9, MUTED, anchor='nw').grid(row=row, column=0, sticky='nw', padx=(10, 12), pady=2)
+            cell = label(table, value, 10, colors[tone], True, anchor='w', justify='left', wraplength=400)
+            cell.grid(row=row, column=1, sticky='w', pady=2)
+            self.cells[name] = cell
+        note = d['reason'] + ('\n'+d['advice'] if d['advice'] else '') if not d['migrate_possible'] else ''
+        self.reason_label = label(self.scroll.body, note, 10, AMBER, justify='left', anchor='w', wraplength=520)
+        self.reason_label.grid(row=1, sticky='w', padx=16, pady=(2, 6))
+        bottom = tk.Frame(self, bg=BG)
+        bottom.grid(row=2, sticky='ew', padx=16, pady=(4, 8))
+        bottom.columnconfigure(0, weight=1)
+        label(bottom, '현재 진단 정보를 확인했습니다.', 10, MUTED, anchor='w').grid(row=0, column=0, sticky='w')
+        self.close_button = ActionButton(bottom, '진단 확인 · 대응 선택', self.destroy)
+        self.close_button.grid(row=0, column=1, sticky='e')
+        self.bind('<Escape>', lambda _: self.destroy())
+        center_dialog(self, parent, size=(640, 470), minimum=(480, 300))

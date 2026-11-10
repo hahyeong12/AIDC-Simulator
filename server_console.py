@@ -326,7 +326,9 @@ class ServerPanel(tk.Frame):
         views=server_views(self.session)
         self.view=next(v for v in views if v['spec'].key==self.selected)
         self.inspector.view=self.view; self.inspector.draw()
-        self.fault_button.configure(state='normal' if self.view['health'] == 'HEALTHY' else 'disabled')
+        story = getattr(self.session, 'story', None)
+        scripted = bool(story is not None and getattr(story, 'chapter3b', None) is not None)   # Chapter 3b의 장애는 자동 발생
+        self.fault_button.configure(state='normal' if self.view['health'] == 'HEALTHY' and not scripted else 'disabled')
         self.repair_button.configure(state='normal' if self.view['health'] == 'FAULT' else 'disabled')
         self.owners.delete(*self.owners.get_children())
         for o in self.view['owners']:

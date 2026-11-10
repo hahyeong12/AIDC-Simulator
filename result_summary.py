@@ -199,3 +199,38 @@ def chapter2_summary(result):
             'resources': (f'GPU {sum(j["gpu"] for j in ran)}개 / 전력 {sum(j["power"] for j in ran)}단위 사용 후 반환'
                           if ran else '사용한 자원 없음'),
             'verdict': ('두 고객 모두 기한 내 완료' if ok == len(jobs) else f'{len(jobs)}명 중 {ok}명만 기한 내 정상 완료')}
+
+
+def chapter3b_summary(result):
+    """Chapter 3b 결과 요약표(미션 · 장애 · 선택 대응 · 결과 · 중단 · 점수)와 선배 분석. 저장된 기록에서만 계산합니다."""
+    from chapter3b import result_outcome, mentor_lines
+    jobs = result['jobs']
+    ok = sum(1 for j in jobs if j['success'])
+    table, rows = [], []
+    for index, job in enumerate(jobs):
+        record, summary = job['record'], job['job']
+        table.append(("AB"[index], f'Server {record["server"]} 장애' if record else '장애 발생 전 종료',
+                      ' → '.join(job['choices']) or '대응 없음', result_outcome(job), f'{job["downtime"]}분',
+                      f'{summary["score"]}점' if summary['score'] is not None else '확정 점수 없음'))
+        rows.append([('장애 서버', f'Server {record["server"]}' if record else '-'),
+                     ('선택 대응', ' → '.join(job['choices']) or '대응 없음'),
+                     ('선택 시 예상', (f'복구 완료 {game_time(record["repair_finish"])}' if record.get('repair_finish') is not None else '-')
+                      + (f' / 이전 완료 {game_time(record["migrate_finish"])}' if record.get('migrate_finish') is not None else ' / 이전 불가')
+                      + (f' / 기한 {game_time(record["due"])}' if record.get('due') is not None else '')),
+                     ('서버 배정(마지막)', job['last_placement'] or '-'), ('배정 기록 수', str(job['allocations'])),
+                     ('중단 시간', f'{job["downtime"]}분 (하드웨어 중단 + 이전 준비)')])
+    detail = []
+    for index, job in enumerate(jobs):
+        detail.append(f'미션 {"AB"[index]} · {job["country"]} {job["company"]} — {job["job"]["task"]}')
+        detail += [f'  {name}: {value}' for name, value in rows[index]]
+        detail.append(f'  운영 모드 {job["job"]["mode"]} · GPU {job["job"]["gpu"]} / 전력 {job["job"]["power"]} 사용 후 '
+                      + ('반환' if result.get('released') else '(반환 확인 필요)'))
+    detail.append('서버 상태: '+' / '.join(f'{key} {value}' for key, value in result['servers'].items()))
+    if result.get('practice'):
+        detail.append('이 기록은 Chapter 3b 독립 연습 슬롯의 것이며 이전 Chapter 진행·점수와 별개입니다.')
+    detail.append('이 장의 서버 구성과 시간은 교육용 설정입니다.')
+    return {'mission': result['mission'], 'ok': ok, 'total': len(jobs), 'table': table, 'rows': rows,
+            'columns': ('미션', '장애', '선택 대응', '결과', '중단', '점수'), 'name': 'Chapter 3b',
+            'subtitle': '서버 장비 장애 · 복구와 이전', 'detail_text': '\n'.join(detail),
+            'verdict': ('두 장애 모두 기한 내 정상 완료' if ok == len(jobs) else f'{len(jobs)}개 장애 미션 중 {ok}개만 기한 내 정상 완료'),
+            'mentor': mentor_lines(jobs, ok)}
