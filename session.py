@@ -13,6 +13,10 @@ from chapter3b import (Chapter3bProgress, CHAPTER3B_COUNTRIES, CHAPTER3B_SCENARI
                        impossible_reason, card as hw_card)
 from result_summary import customer_reaction, outcome_key, job_summary, chapter1_summary, chapter2_summary, chapter3_summary, chapter3b_summary
 from chapter2 import Chapter2Progress, CHAPTER2_COUNTRIES, CHAPTER2_SCENARIOS, is_finished
+from training import (TrainingProgress, STAGES, STAGE_INFO, SOURCES, QUESTIONS, TRAINING_COUNTRY, TRAINING_SCENARIO,
+                      fact_statements, make_record, received_options)
+from lab_model import LAB_NETWORK, observe
+from lab_terminal import COMMAND_SPECS, assemble, choice_command, run_command
 
 REQUEST_LABELS = {'new':'신규 요청','review':'검토 중','waiting':'대기',
                   'operating':'수락','rejected':'거절','completed':'처리 완료'}
@@ -51,7 +55,7 @@ class GameSession:
         saved = db.get_simulation()
         if mode not in ('free', 'story'):
             raise ValueError('존재하지 않는 게임 모드입니다.')
-        if start_chapter not in (1, 2, 3, '3b') or (start_chapter in (2, 3, '3b') and (mode != 'story' or saved)):
+        if start_chapter not in (1, 2, 3, '3b', 'lab') or (start_chapter in (2, 3, '3b', 'lab') and (mode != 'story' or saved)):
             raise ValueError('Chapter 2/3 연습은 비어 있는 새 스토리 슬롯에서만 시작할 수 있습니다.')
         if saved and saved.get('mode', 'free') != mode:
             raise ValueError('선택한 모드와 저장 파일이 다릅니다. 모드별 저장 파일을 사용해 주세요.')
@@ -62,8 +66,8 @@ class GameSession:
             raise ValueError('저장된 스토리 진행 기록을 찾을 수 없습니다.')
         self.story = None
         if mode == 'story' and not saved:
-            self.story = StoryProgress(practice=start_chapter in (2, 3, '3b'),
-                                       practice_chapter=start_chapter if start_chapter in (3, '3b') else 2)
+            self.story = StoryProgress(practice=start_chapter in (2, 3, '3b', 'lab'),
+                                       practice_chapter=start_chapter if start_chapter in (3, '3b', 'lab') else 2)
         self.minute = saved['minute'] if saved else 540
         self.seed = saved['seed'] if saved else (seed if seed is not None else random.SystemRandom().randrange(2**31))
         self.roll_index = saved['roll_index'] if saved else 0
@@ -89,6 +93,7 @@ class GameSession:
             self._validate_chapter2()
             self._validate_chapter3()
             self._validate_chapter3b()
+            self._validate_training()
         self._restore_servers()
         hardware = saved.get('server_health', {}) if saved else {}
         if not isinstance(hardware, dict) or set(hardware)-{s.key for s in SERVERS}:
@@ -249,6 +254,8 @@ class GameSession:
                     self._advance_chapter3()
                 if self.story and self.story.chapter3b is not None:
                     self._advance_chapter3b()
+                if self.story and self.story.training is not None:
+                    self.story.training.update(self.runs[self.story.training.rid].state)
                 self._persist()
         except Exception:
             self.runs.clear()
@@ -953,6 +960,8 @@ class GameSession:
     def story_objective(self):
         """현재 목표 문구. Chapter 3 장애 해결 뒤에는 복구 준비/정상 실행 상태에 맞는 목표를 보여 줍니다."""
         story = self.story
+        if story and story.training is not None:
+            return self.training_objective()
         chapter3 = story.chapter3 if story else None
         chapter3b = story.chapter3b if story else None
         if chapter3b is not None and chapter3b.step in ('a_finish', 'b_finish') and len(chapter3b.request_ids) > (chapter3b.step == 'b_finish'):
@@ -1262,6 +1271,311 @@ class GameSession:
         result['mentor'] = result['summary']['mentor']
         return result
 
+    # ── v0.9-4a-1 심화 연수(Stage 1~5) ───────────────────────────────
+    # Stage 행동은 학습 기록만 저장합니다(게임 시간·점수·자원·동의 불변). 실제 복구는 기존 respond()만 사용합니다.
+    def _validate_training(self):
+        training = self.story.training if self.story else None
+        if training is None:
+            if self.story and self.story.practice and self.story.practice_chapter == 'lab':
+                raise ValueError('Engineering Lab 연습 슬롯의 연수 기록이 없습니다.')
+            return
+        for rid in training.request_ids:
+            run = self.runs.get(rid)
+            if run is None or run.mission['country'] != TRAINING_COUNTRY or run.state.scenario != TRAINING_SCENARIO:
+                raise ValueError('심화 연수의 고객 요청이 저장된 기록과 일치하지 않습니다.')
+
+    @property
+    def training(self):
+        return self.story.training if self.story else None
+
+    def training_unlock_reason(self):
+        """정규 심화 연수: Chapter 3b를 성공으로 마친 정규 슬롯에서만 시작합니다. 가능하면 빈 문자열."""
+        story = self.story
+        if not story:
+            return '심화 연수는 스토리 모드에서만 진행합니다.'
+        if story.practice:
+            return '독립 연습 슬롯의 결과로는 정규 심화 연수를 시작할 수 없습니다. 스토리 메뉴의 [Engineering Lab 연습]을 이용하세요.'
+        if story.training is not None:
+            return '이미 심화 연수를 시작했습니다.'
+        if story.chapter3b is None or not story.chapter3b.completed:
+            return 'Chapter 3b를 완료한 뒤 심화 연수를 시작할 수 있습니다.'
+        if self.chapter3b_result()['mission'] != 'success':
+            return 'Chapter 3b 미션을 성공해야 심화 연수를 시작할 수 있습니다.'
+        return ''
+
+    def start_training(self):
+        reason = self.training_unlock_reason()
+        if reason:
+            raise ValueError(reason)
+        return self._open_training()
+
+    def _training_mission(self):
+        mid = next((mid for mid, m in self.missions.items() if m['country'] == TRAINING_COUNTRY), None)
+        if mid is None:
+            raise ValueError(f'{TRAINING_COUNTRY} 고객 미션을 찾을 수 없습니다.')
+        return mid
+
+    def _open_training(self):
+        """연수용 경로 단절 사건(Chapter 3a 미션 A와 같은 교육 조건)의 새 요청을 접수합니다. 기존 Chapter 기록은 그대로 둡니다."""
+        mid = self._training_mission()
+        with self._atomic():
+            rid = self._receive(mid, f'training:{mid}:1', TRAINING_SCENARIO)
+            self.story.training = TrainingProgress([rid], practice=self.story.practice)
+            self.selected_id = rid
+        return rid
+
+    def _require_training(self):
+        if self.training is None:
+            raise ValueError('심화 연수 또는 Engineering Lab 연습에서만 사용할 수 있습니다.')
+        return self.training
+
+    def training_incident(self):
+        """연수 사건 상태: waiting(장애 전) / active(장애 중) / recovered(조치 완료) / lost(사건이 끝나 다시 받아야 함)."""
+        run = self.runs[self._require_training().rid]
+        s = run.state
+        if run.request['status'] == 'rejected' or run.terms.get('expired') or s.retry_count:
+            return 'lost'
+        if s.recovered_by:
+            return 'recovered'
+        if s.phase == 'finished':
+            return 'lost'
+        if s.allocated and s.incident_kind:
+            return 'active'
+        return 'waiting'
+
+    def training_can_restart(self):
+        t = self.training
+        if t is None or t.done or 'independent' in t.completed:
+            return False
+        return self._training_needs_new_incident() and not self._training_request_open()
+
+    def _training_needs_new_incident(self):
+        t = self.training
+        incident = self.training_incident()
+        # 연습에서 증거를 모으기 전에 복구했다면 Stage 5를 다시 해 볼 수 있도록 새 사건을 받을 수 있습니다.
+        return incident == 'lost' or (incident == 'recovered' and not t.stage5_evidence(t.rid)[0])
+
+    def _training_request_open(self):
+        # 같은 고객 미션의 열린 요청은 하나뿐입니다(기존 DB 규칙). 지난 연수 요청이 끝나야 새 사건을 받을 수 있습니다.
+        return self.runs[self.training.rid].request['status'] in ('new', 'review', 'waiting', 'operating')
+
+    def restart_training_incident(self):
+        """같은 교육 조건의 새 연수 사건을 접수합니다. 지난 요청·기록은 그대로 보존하고 통과한 Stage도 유지합니다."""
+        t = self._require_training()
+        if not self.training_can_restart():
+            raise ValueError('지금 연수 사건은 계속 진행할 수 있습니다. 사건이 끝났을 때만 다시 받을 수 있습니다.')
+        mid = self._training_mission()
+        with self._atomic():
+            rid = self._receive(mid, f'training:{mid}:{len(t.request_ids)+1}', TRAINING_SCENARIO)
+            t.request_ids = [*t.request_ids, rid]
+            self.selected_id = rid
+        return rid
+
+    def _training_stage(self, stage, source=None):
+        t = self._require_training()
+        if stage not in STAGES or (source is not None and SOURCES.get(stage) != source):
+            raise ValueError('이 Stage에서 사용할 수 없는 학습 방식입니다.')
+        if t.is_locked(stage):
+            info = STAGE_INFO[stage]
+            raise ValueError(f'Stage {info["no"]} · {info["short"]}은(는) 아직 잠겨 있습니다. 앞 Stage를 먼저 통과하세요.')
+        # 정규 연수에서 이미 통과한 Stage는 복습(기록 없음)이고, 현재 Stage의 행동만 진행 기록에 남깁니다.
+        return t, (t.practice or stage == t.current)
+
+    def training_command(self, source, payload, stage):
+        """객관식(choice: 명령 이름)·블록(blocks: (명령, 옵션, 대상))·터미널(terminal: 한 줄)을 같은 해석기로 실행합니다.
+        잠긴 Stage는 엔진에서 거부합니다. 읽기 명령만 있으므로 게임 상태는 바뀌지 않고 학습 기록만 저장됩니다."""
+        t, recording = self._training_stage(stage, source)
+        observation = observe(self, t.rid)
+        if source == 'choice':
+            if payload not in COMMAND_SPECS:
+                raise ValueError('선택지에 없는 명령입니다.')
+            line = choice_command(payload, observation)
+        elif source == 'blocks':
+            line = assemble(*payload)
+        else:
+            line = str(payload)
+        result = run_command(line, observation)
+        if recording and result.kind not in ('empty', 'clear'):
+            with self._atomic():
+                t.record(stage, make_record(t.rid, source, result, observation))
+                if source == 'choice':
+                    t.record_answer('tool', 'choice', payload, payload == 'ping', t.rid)
+        return result
+
+    def training_select_segment(self, segment):
+        """Stage 1: 구조도의 구간을 직접 고릅니다. 정답 여부는 현재 관찰 상태(구간 DOWN)로 판정합니다."""
+        t, recording = self._training_stage('structure')
+        observation = observe(self, t.rid)
+        segments = observation.network.segments
+        if segment not in segments and segment != 'job-link':
+            raise ValueError('구조도에 없는 구간입니다.')
+        status = segments.get(segment)
+        correct = status == 'down'
+        if recording:
+            with self._atomic():
+                t.record_answer('structure', 'segment', segment, correct, t.rid)
+        router = LAB_NETWORK['routers']['primary']['address']
+        gateway = LAB_NETWORK['aidc_gateway']['address']
+        if correct:
+            text = f'맞아요. 주 경로 라우터({router})와 AIDC 게이트웨이({gateway}) 사이 구간이 DOWN입니다. 이 구간을 지나는 데이터가 막혀 있어요.'
+        elif status == 'standby':
+            text = '백업 경로는 지금 대기 중일 뿐 끊어진 것이 아니에요. 빨간 ✕ 표시가 있는 구간을 다시 찾아보세요.'
+        elif status in ('up', 'active'):
+            text = '이 구간은 현재 정상(UP)이에요. 끊어진 구간을 다시 찾아보세요.'
+        else:
+            text = '고객 작업과 서버를 잇는 표시예요. 네트워크 장비 사이의 구간을 골라 보세요.'
+        return correct, text
+
+    def training_answer(self, stage, question, answer):
+        """Stage 확인 질문. 앞선 실제 행동이 있어야 답할 수 있고, 오답이어도 다시 시도할 수 있습니다(미션 실패 없음)."""
+        t, recording = self._training_stage(stage)
+        rid = t.rid
+        if (stage, question) == ('structure', 'impact'):
+            if not t.answered('structure', 'segment'):
+                raise ValueError('먼저 구조도에서 끊어진 구간을 선택하세요.')
+            correct = answer == QUESTIONS[(stage, question)]['correct']
+            text = ('맞아요. 경로가 끊기면 서버와 GPU는 정상이어도 데이터가 도착하지 않아 작업이 멈춥니다.' if correct else
+                    '구조도를 다시 보세요. 끊어진 것은 장비 사이의 연결선이에요. 서버나 고객 단말 자체의 표시는 정상입니다.')
+        elif (stage, question) == ('tool', 'limit'):
+            if not t.answered('tool', 'choice'):
+                raise ValueError('먼저 목적에 맞는 도구를 골라 실제 결과를 확인하세요.')
+            correct = answer == QUESTIONS[(stage, question)]['correct']
+            text = ('맞아요. ping은 응답이 오가는지만 알려 줘요. 원인과 애플리케이션 상태는 다른 증거가 필요해요.' if correct else
+                    'ping 출력에는 보낸 수·받은 수·시간만 있어요. 그 숫자만으로 원인이나 작업 상태까지 말할 수 있을까요?')
+        elif (stage, question) == ('assemble', 'received'):
+            record = t.valid_assembly()
+            if record is None:
+                raise ValueError('먼저 횟수 옵션과 서버 주소가 있는 ping을 조립해 실행하세요.')
+            try:
+                correct = int(answer) == record['received']
+            except (TypeError, ValueError):
+                raise ValueError('응답 수는 숫자로 고르세요.') from None
+            text = (f'맞아요. {record["count"]}번 보내 {record["received"]}번 응답을 받았습니다.' if correct else
+                    "출력의 '... packets transmitted, N received' 줄을 다시 읽어 보세요.")
+        elif (stage, question) == ('terminal', 'facts'):
+            statements = fact_statements(t)
+            if not statements:
+                raise ValueError('가까운 네트워크 장비 · 원격 서버 · 라우팅 정보를 터미널에서 먼저 관측하세요.')
+            if not isinstance(answer, dict) or set(answer) != {key for key, _, _ in statements}:
+                raise ValueError('모든 문장을 [확인된 사실] 또는 [아직 확정 불가]로 분류하세요.')
+            wrong = [key for key, _, truth in statements if answer[key] != truth]
+            correct = not wrong
+            text = ('정확해요. 관측한 결과는 사실이고, 원인에 대한 문장은 아직 추측이에요.' if correct else
+                    f'다시 생각해 볼 문장이 {len(wrong)}개 있어요. 터미널 출력에 직접 나타난 것만 확인된 사실이에요.')
+        elif (stage, question) == ('independent', 'cause'):
+            if not t.stage5_evidence(rid)[0]:
+                raise ValueError('원인을 판단하기 전에 직접 관측한 증거가 필요합니다(원격 대상 관측과 다른 관측 하나 이상, 조치 전).')
+            correct = answer == self.runs[rid].state.incident_kind
+            text = ('증거와 맞는 판단이에요. 이제 관제실에서 원인에 맞는 조치를 선택하세요.' if correct else
+                    '기록한 증거와 맞지 않아요. 가까운 장비와 원격 대상의 결과 차이를 다시 비교해 보세요.')
+        else:
+            raise ValueError('존재하지 않는 확인 질문입니다.')
+        if recording:
+            with self._atomic():
+                t.record_answer(stage, question, answer, correct, rid)
+        return correct, text
+
+    def start_next_stage(self):
+        t = self._require_training()
+        if not t.can_advance():
+            raise ValueError('현재 Stage를 통과해야 다음 Stage를 시작할 수 있습니다.')
+        with self._atomic():
+            t.current = t.next_stage
+        return t.current
+
+    def focus_training_stage(self, stage):
+        """연습 모드 전용: 원하는 Stage를 골라 연습합니다(정규 통과로 기록하지 않음)."""
+        t = self._require_training()
+        if not t.practice:
+            raise ValueError('정규 심화 연수에서는 Stage를 순서대로 진행합니다.')
+        if stage not in STAGES:
+            raise ValueError('존재하지 않는 Stage입니다.')
+        with self._atomic():
+            t.current = stage
+
+    def training_response_locked(self, run):
+        """정규 연수 사건: Stage 5에서 직접 관측·원인 판단을 마치기 전에는 네트워크 대응을 할 수 없습니다(엔진 검증)."""
+        t = self.training
+        if (t is None or t.practice or run.request['id'] not in t.request_ids or not run.state.incident_kind
+                or run.state.phase not in ('incident', 'paused')):
+            return ''
+        if t.current != 'independent':
+            return '심화 연수: 이 장애는 Stage 5(독립 진단)에서 직접 관측하고 원인을 판단한 뒤 조치합니다.'
+        if not t.answered('independent', 'cause', run.request['id']):
+            return '심화 연수 Stage 5: Engineering Lab에서 증거를 관측하고 원인을 판단한 뒤 조치할 수 있습니다.'
+        return ''
+
+    def training_objective(self):
+        t = self.training
+        if t.done:
+            return ('Engineering Lab 연습의 모든 Stage를 체험했습니다.' if t.practice
+                    else '심화 연수 완료 · [연수 결과]에서 결과를 확인하세요.')
+        info = STAGE_INFO[t.current]
+        head = f'Stage {info["no"]}/5 · {info["title"]}'
+        incident = self.training_incident()
+        run = self.runs[t.rid]
+        if self.training_can_restart():
+            return f'{head} · 연수 사건이 종료되었습니다. [연수 사건 다시 받기]로 같은 장애를 다시 준비하세요.'
+        if not t.done and 'independent' not in t.completed and self._training_needs_new_incident():
+            return (f'{head} · 이 사건으로는 남은 Stage를 진행할 수 없습니다. 현재 요청을 마치면(작업 완료 또는 처리 불가 보고) '
+                    '[연수 사건 다시 받기]를 사용할 수 있습니다.')
+        if t.current_passed() and t.can_advance():
+            return f'{head} 완료 · Engineering Lab에서 [다음 Stage 시작]을 누르세요.'
+        if incident == 'waiting':
+            if not run.state.allocated:
+                return f'{head} · 연수용 고객 요청을 확인하고 배정해 작업을 시작하세요. 장애가 나면 Engineering Lab에서 관찰합니다.'
+            return f'{head} · 시간을 진행해 작업을 계속하세요. 장애가 발생하면 Engineering Lab을 여세요.'
+        if t.current == 'independent' and incident == 'recovered':
+            return f'{head} · 조치를 마쳤습니다. 같은 관측 도구로 정상화를 재확인하세요.'
+        if t.current == 'independent' and t.answered('independent', 'cause', t.rid):
+            return f'{head} · 원인을 판단했습니다. 관제실에서 원인에 맞는 조치를 선택하세요.'
+        return f'{head} · Engineering Lab에서 진행하세요.'
+
+    def training_status(self):
+        """Lab 연수 화면용 조회(상태를 바꾸지 않음). Stage 4 문장의 정답은 포함하지 않습니다."""
+        t = self._require_training()
+        run = self.runs[t.rid]
+        evidence_ok, before = t.stage5_evidence(t.rid)
+        assembly = t.valid_assembly()
+        return {
+            'practice': t.practice, 'current': t.current, 'info': STAGE_INFO[t.current], 'passed': t.current_passed(),
+            'can_advance': t.can_advance(), 'next': t.next_stage, 'done': t.done, 'count': t.completed_count,
+            'stages': [{'key': key, **STAGE_INFO[key], 'state': t.stage_state(key), 'passed': key in t.completed}
+                       for key in STAGES],
+            'incident': self.training_incident(), 'can_restart': self.training_can_restart(), 'rid': t.rid,
+            'locked_response': self.training_response_locked(run),
+            'segment': t.answer('structure', 'segment'), 'impact': t.answer('structure', 'impact'),
+            'choice': t.answer('tool', 'choice'), 'limit': t.answer('tool', 'limit'),
+            'assembly': assembly, 'received_options': received_options(assembly) if assembly else [],
+            'received': t.answer('assemble', 'received'),
+            'evidence': t.terminal_evidence(), 'statements': [(key, text) for key, text, _ in fact_statements(t)],
+            'facts': t.answer('terminal', 'facts'),
+            'stage5': {'evidence_ok': evidence_ok, 'evidence_count': len(before),
+                       'cause': t.answer('independent', 'cause', t.rid), 'recovered': bool(run.state.recovered_by),
+                       'verified': t.stage5_verified(t.rid)},
+        }
+
+    def training_result(self):
+        t = self._require_training()
+        if not t.done:
+            raise ValueError('다섯 Stage를 모두 통과한 뒤 연수 결과를 확인할 수 있습니다.')
+        run = self.runs[t.rid]
+        rows = []
+        for key in STAGES:
+            info = STAGE_INFO[key]
+            tries = sum(item.get('attempts', 0) for item in t.answers.get(key, {}).values())
+            rows.append((f'Stage {info["no"]} · {info["short"]}', '통과', f'관측·실행 {len(t.records(key))}회 · 답변 {tries}회'))
+        cause = t.answer('independent', 'cause', t.rid) or {}
+        state = run.state
+        return {'practice': t.practice, 'rows': rows, 'restarts': len(t.request_ids)-1,
+                'stage5': {'evidence': len(t.stage5_evidence(t.rid)[1]), 'cause_attempts': cause.get('attempts', 0),
+                           'recovered_by': RESPONSE_LABELS.get(state.recovered_by, '-'),
+                           'job': (('완료' if state.succeeded else '실패') if state.phase == 'finished'
+                                   else f'진행 {state.progress:.0f}%')},
+                'notice': 'Stage 5는 이미 경험한 경로 단절 사건을 재사용한 독립 진단 흐름의 시연입니다. '
+                          '처음 보는 장애에 대한 숙련도 인증이 아닙니다.',
+                'outro': STAGE_INFO['independent']['done']}
+
     def skip_tutorial(self):
         if self.story and not self.story.tutorial_completed:
             with self._atomic():
@@ -1439,6 +1753,8 @@ class GameSession:
         if self.story:
             if self.runs:
                 return None
+            if self.story.practice and self.story.practice_chapter == 'lab':
+                return self._open_training()
             if self.story.practice and self.story.practice_chapter == '3b':
                 return self._open_chapter3b()
             if self.story.practice and self.story.practice_chapter == 3:
@@ -1867,6 +2183,9 @@ class GameSession:
 
     def respond(self, key):
         run = self.current
+        locked = self.training_response_locked(run)
+        if locked:
+            raise ValueError(locked)
         chapter3 = self.story.chapter3 if self.story else None
         if (chapter3 is not None and run.request['id'] in chapter3.request_ids and run.state.incident_kind
                 and run.request['id'] not in chapter3.diagnosed):

@@ -54,6 +54,11 @@ class StorySlots:
             done2 = bool(chapter2) and len(chapter2.get('completed_steps', [])) >= 6
             chapter3 = story.get('chapter3') if isinstance(story.get('chapter3'), dict) else None
             chapter3b = story.get('chapter3b') if isinstance(story.get('chapter3b'), dict) else None
+            training = story.get('training') if isinstance(story.get('training'), dict) else None
+            if training:
+                count = len(training.get('completed', [])) if isinstance(training.get('completed'), list) else 0
+                label = ' · Engineering Lab 연습 ' if training.get('practice') else ' · 심화 연수 '
+                return label + ('완료' if count >= 5 else f'{count}/5 진행 중')
             if chapter3b:
                 done3b = len(chapter3b.get('completed_steps', [])) >= 11
                 return (' · Chapter 3b 연습 ' if story.get('practice_chapter') == '3b' else ' · Chapter 3b ')+('완료' if done3b else '진행 중')

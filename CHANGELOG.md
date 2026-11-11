@@ -1,6 +1,33 @@
 
 # AIDC Simulator 개발 기록
 
+## v0.9-4a-1 심화 연수 Stage 1~5 — 성장형 교육 진행 뼈대 - 2026-11-11
+
+- 목적: v0.9-4a의 기능 모음(구조도·객관식·블록·터미널)에 **교육 진행 엔진과 스토리라인**을 연결. Chapter(업무·사건)와 Stage(이해 깊이·해결 방식)를 분리하고, 실제 학습 행동으로만 다음 Stage를 엽니다.
+- `training.py`(신규, Tk·DB 독립): `TrainingProgress`(현재 Stage·완료 Stage·학습 행동 기록·답변, 정규/연습 구분과 순서 검증), Stage별 통과 판정(`passed`), Stage 5 증거/재확인(`stage5_evidence`, `stage5_verified`), Stage 4 문장(`fact_statements`), `STAGE_INFO`(제목·목표·도입 1~2줄·완료 피드백), `QUESTIONS`.
+- `story.py`: `StoryProgress.training` 선택 필드와 `practice_chapter='lab'`. 연수가 있으면 화면 단계(`t_<stage>`)·라벨(심화 연수/Engineering Lab 연습)·목표·대화를 연수 기준으로 계산. 정규 연수는 Chapter 3b를 마친 정규 슬롯에만, 연습 연수는 이전 Chapter 기록이 없는 연습 슬롯에만 허용.
+- `session.py`: `training_unlock_reason`/`start_training`(3b 성공 정규 슬롯만), `GameSession(start_chapter='lab')` 연습 슬롯, `training_command`(choice/blocks/terminal을 같은 해석기로 실행, **잠긴 Stage·맞지 않는 입력 방식 거부**, 현재 Stage만 기록), `training_select_segment`, `training_answer`, `start_next_stage`, `focus_training_stage`(연습 전용), `training_response_locked`(정규 연수 사건은 Stage 5 증거·원인 판단 전 `respond()` 거부), `restart_training_incident`(같은 고객의 열린 요청이 끝난 뒤), `training_status`/`training_objective`/`training_result`. `_atomic()`에서 Stage 통과를 판정·저장·롤백.
+- `lab_model.py`: `lab_mode()`(training/practice/preview/미지원)와 `lab_support()`.
+- `engineering_lab.py`: 첫 탭 **[연수 진행]**(단계 지도·진행률·현재 목표·선배/신입 도입 대사·확인 질문·[다음 Stage 시작]·[연수 사건 다시 받기]), 잠긴 도움 수준/터미널, 구조도 연결선 클릭(Stage 1), Stage 5의 장애 표시·해석 도움 숨김. 모든 학습 실행은 세션 엔진 경유. `TrainingResultDialog`(연수 결과·숙련도 인증 아님·향후 전문 과정 안내). Chapter 3a는 관찰 미리보기(학습·터미널 잠금).
+- `main.py`: Chapter 3b 결과창·상단 바의 [심화 연수 시작], 연수 사건의 [Engineering Lab에서 진단] 버튼과 원인 수치를 숨긴 안내, Stage 5 전 대응 버튼 비활성, 연수 결과, 진행 현황, 모드 메뉴의 **[Engineering Lab 연습 · 새 슬롯]**. 연수 사건에는 Chapter 3a 진단창을 쓰지 않음.
+- `story_slots.py`: 슬롯 설명에 `심화 연수 N/5`·`Engineering Lab 연습` 표시.
+- `version.py`: v0.9-4a-1.
+- 테스트: 신규 `tests/test_training.py` 27개(비GUI), `tests/test_training_gui.py`(작성만), `tests/test_engineering_lab_gui.py`를 연습 슬롯 기준으로 조정하고 Chapter 3a 미리보기 잠금 검증 추가(작성만). 비GUI 637개 통과.
+- 변경 없음: 게임 규칙·점수·기한·자원·동의·장애 복구, Chapter 1~3b·자유 운영, SQL 구조. 저장 JSON은 선택 필드만 추가.
+
+## v0.9-4a Engineering Lab (Prototype) — 최종 교육 시스템의 통합 뼈대 - 2026-11-11
+
+- 목적: 새 Chapter 대신 기존 Chapter 3a 미션 A(`ch3_path`)의 **같은 게임 상태**를 운영 GUI·구조도·서버 내부·명령어 학습·가상 터미널에서 함께 관찰하는 Walking Skeleton.
+- `lab_model.py`(신규, Tk·DB 독립): `observe(session, rid)` → 불변 `LabObservation`(가상 시각·고객/작업·진행률·운영 모드·작업 서버·서버별 `ServerView`(상태·GPU 슬롯 원장·전력)·`NetworkView`(주/백업 경로·우회·필요/가용·장애/복구·구간 상태)). `lab_support()`는 지원 여부/이유. 교육용 가상 네트워크 설정 `LAB_NETWORK`(실제 장비 정보 아님 표시). 메모리 전용 `LabLearningTrace`(운영 점수와 분리, 저장 안 함).
+- `lab_terminal.py`(신규, Tk·DB 독립): 허용 목록 해석기(`shlex` 토큰화)와 결과 생성기 `run_command(line, observation)`. `help`·`ping [-c N] <주소>`·`ip addr [show <인터페이스>]`·`ip route`·`clear`. 출력은 관찰 상태로 계산(경로 단절 중 서버 ping 100% 손실·가까운 라우터 응답·경로 설정 유지, 우회 후 백업 경로 응답·다음 홉 변경). 파이프/리디렉션/명령 연결/변수 치환·상태 변경 명령 거부, 미지원 실제 명령과 없는 명령 구분. `COMMAND_SPECS`(목적·확인 가능/불가), `CHOICE_FIT`, `assemble`/`block_feedback`(블록 오류도 같은 해석기), `interpret`(ping 실패를 단정하지 않는 해석 도움).
+- `engineering_lab.py`(신규): 5개 탭(운영 상태·네트워크 구조·서버 내부·명령어 학습(초급 L1 객관식/중급 L2 블록/고급 L3 안내 최소화)·가상 터미널). 흐름 점 애니메이션 120ms(화면만 갱신, 게임 시간과 무관), 창 종료 시 타이머 취소. 조회 전용.
+- `ui_kit.py`(신규): 상태 칩(색+아이콘+문구)·큰 게이지·기본 행동 버튼·토글 버튼. 새 화면부터 점진 도입(기존 Chapter UI 변경 없음).
+- `main.py`: 하단 [Engineering Lab (Prototype)] 버튼(미지원 미션은 이유 안내만), 관제실 `refresh()` 때 열린 Lab 재계산. 여는 동작은 세션 작업을 실행하지 않음.
+- 버그 수정: Chapter 1에서 GPU·전력 정보 확인 직후 다음 고객 요청에 금색 강조가 순간적으로 나타났다 사라지던 문제. 원인: `_perform()`의 `refresh()`가 다음 단계 대상을 먼저 강조하고 곧이어 열리는 피드백 창이 강조를 지움. 교육 단계가 바뀐 동작에서는 강조를 피드백/교육창 처리 뒤로 미룹니다(`highlight_deferred`).
+- `version.py`: v0.9-4a.
+- 테스트: 신규 `tests/test_engineering_lab.py` 30개(비GUI), `tests/test_engineering_lab_gui.py` 5개(작성만, 미실행). 버전 검증 갱신. 비GUI 610개 통과.
+- 변경 없음: 게임 규칙·점수·기한·자원·고객 동의, Chapter 1~3b·자유 운영, SQL 구조, 저장 JSON(새 필드 없음).
+
 ## v0.9-3b Chapter 3b 서버 장비 장애 교육 - 2026-11-10
 
 - `game.SCENARIOS`: `ch3b_jp`(일본 3/4·작업 60·기한 75분)·`ch3b_sg`(싱가포르 7/7)와 `hardware_fault`(작업량 40%, Server A) 설정.

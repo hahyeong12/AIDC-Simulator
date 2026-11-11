@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, asdict
 from chapter2 import Chapter2Progress, EVENTS2
 from chapter3 import Chapter3Progress, EVENTS3
 from chapter3b import Chapter3bProgress, EVENTS3B
+from training import TrainingProgress, EVENTS_T, STAGE_INFO, START_INTRO, RESULT_OUTRO
 
 
 LEGACY_STEPS = ('server', 'resources', 'request', 'allocation', 'time', 'complete')
@@ -333,6 +334,8 @@ class StoryProgress:
     chapter3: Chapter3Progress | None = None
     practice_chapter: int | str = 2  # 연습 슬롯이 시작한 Chapter(2, 3 또는 '3b'). 연습이 아니면 기본값 2
     chapter3b: Chapter3bProgress | None = None
+    # v0.9-4a-1 심화 연수(Stage 1~5). Chapter 3b를 성공한 정규 슬롯 또는 [Engineering Lab 연습] 슬롯에만 있습니다.
+    training: TrainingProgress | None = None
 
     def __post_init__(self):
         if isinstance(self.chapter2, dict):
@@ -341,7 +344,9 @@ class StoryProgress:
             self.chapter3 = Chapter3Progress(**self.chapter3)
         if isinstance(self.chapter3b, dict):
             self.chapter3b = Chapter3bProgress(**self.chapter3b)
-        if type(self.practice) is not bool or self.practice_chapter not in (2, 3, '3b') or type(self.practice_chapter) not in (int, str):
+        if isinstance(self.training, dict):
+            self.training = TrainingProgress(**self.training)
+        if type(self.practice) is not bool or self.practice_chapter not in (2, 3, '3b', 'lab') or type(self.practice_chapter) not in (int, str):
             raise ValueError('저장된 Chapter 2 연습 표시가 올바르지 않습니다.')
         if not self.practice and self.practice_chapter != 2:
             raise ValueError('저장된 연습 Chapter 표시가 올바르지 않습니다.')
@@ -361,6 +366,14 @@ class StoryProgress:
                 or (self.practice_chapter == '3b' and (not self.practice or self.chapter2 is not None or self.chapter3 is not None))
                 or (self.practice_chapter != '3b' and (self.chapter3 is None or not self.chapter3.completed))):
             raise ValueError('저장된 Chapter 3b 진행 상태가 올바르지 않습니다.')
+        # 정규 연수는 Chapter 3b를 마친 정규 슬롯에만, 연습 연수는 Engineering Lab 연습 슬롯(이전 Chapter 기록 없음)에만 있습니다.
+        if self.training is not None and (
+                not isinstance(self.training, TrainingProgress)
+                or self.training.practice != (self.practice_chapter == 'lab')
+                or (self.practice_chapter == 'lab' and (not self.practice or self.chapter2 is not None
+                                                       or self.chapter3 is not None or self.chapter3b is not None))
+                or (self.practice_chapter != 'lab' and (self.practice or self.chapter3b is None or not self.chapter3b.completed))):
+            raise ValueError('저장된 심화 연수 진행 상태가 올바르지 않습니다.')
         if self.practice and (self.chapter_completed or self.completed_steps or self.tutorial_completed
                               or self.skipped or self.first_work_completed or self.mission_status != 'pending'
                               or self.request_id is not None or self.legacy_progress):
@@ -378,7 +391,7 @@ class StoryProgress:
                 or self.selected_server not in (None, 'A', 'B', 'C', 'D')):
             raise ValueError('저장된 스토리 진행 상태가 올바르지 않습니다.')
         if (not isinstance(self.dialogue_seen, list)
-                or any(not isinstance(key, str) or key not in (*STEPS, 'closed', 'skipped', *EVENTS2, *EVENTS3, *EVENTS3B) for key in self.dialogue_seen)
+                or any(not isinstance(key, str) or key not in (*STEPS, 'closed', 'skipped', *EVENTS2, *EVENTS3, *EVENTS3B, *EVENTS_T) for key in self.dialogue_seen)
                 or len(set(self.dialogue_seen)) != len(self.dialogue_seen)):
             raise ValueError('저장된 대화 표시 이력이 올바르지 않습니다.')
         expected = STEPS[min(len(self.completed_steps), len(STEPS)-1)]
@@ -438,6 +451,8 @@ class StoryProgress:
             data.pop('chapter3')
         if data['chapter3b'] is None:
             data.pop('chapter3b')
+        if data['training'] is None:
+            data.pop('training')  # 연수 전 저장 형식을 그대로 유지합니다.
         if data['practice_chapter'] == 2:
             data.pop('practice_chapter')  # Chapter 2 연습/이전 저장 형식을 그대로 유지합니다.
         return data
@@ -455,8 +470,14 @@ class StoryProgress:
         return self.chapter3b is not None and not self.chapter3b.completed
 
     @property
+    def training_active(self):
+        return self.training is not None and not self.training.done
+
+    @property
     def ui_done(self):
-        """화면이 보는 '현재 Chapter 완료' 여부. 가장 나중에 시작한 Chapter 기준입니다."""
+        """화면이 보는 '현재 Chapter 완료' 여부. 가장 나중에 시작한 Chapter(또는 심화 연수) 기준입니다."""
+        if self.training is not None:
+            return self.training.done
         if self.chapter3b is not None:
             return self.chapter3b.completed
         if self.chapter3 is not None:
@@ -465,6 +486,8 @@ class StoryProgress:
 
     @property
     def ui_step(self):
+        if self.training is not None:
+            return 't_done' if self.training.done else 't_'+self.training.current
         if self.chapter3b is not None:
             return 'c3b_done' if self.chapter3b.completed else 'c3b_'+self.chapter3b.step
         if self.chapter3 is not None:
@@ -475,6 +498,8 @@ class StoryProgress:
 
     @property
     def ui_completed_steps(self):
+        if self.training is not None:
+            return ['t_'+key for key in self.training.completed]
         if self.chapter3b is not None:
             return ['c3b_'+key for key in self.chapter3b.completed_steps]
         if self.chapter3 is not None:
@@ -485,6 +510,8 @@ class StoryProgress:
 
     @property
     def chapter_label(self):
+        if self.training is not None:
+            return 'Engineering Lab 연습' if self.training.practice else '심화 연수'
         if self.chapter3b is not None:
             return 'Chapter 3b'
         if self.chapter3 is not None:
@@ -493,7 +520,7 @@ class StoryProgress:
 
     @property
     def dialogue_event(self):
-        if self.chapter2 is not None or self.chapter3 is not None or self.chapter3b is not None:
+        if self.chapter2 is not None or self.chapter3 is not None or self.chapter3b is not None or self.training is not None:
             return self.ui_step
         if self.chapter_completed:
             return 'complete'
@@ -503,6 +530,11 @@ class StoryProgress:
 
     @property
     def objective(self):
+        if self.training is not None:
+            if self.training.done:
+                return '심화 연수 완료 · 결과를 확인하세요.'
+            info = STAGE_INFO[self.training.current]
+            return f'Stage {info["no"]} · {info["title"]}: {info["goal"]}'
         if self.chapter3b is not None:
             return GUIDES3B[self.ui_step[4:]][0]
         if self.chapter3 is not None:
@@ -521,6 +553,11 @@ class StoryProgress:
 
     @property
     def dialogue(self):
+        if self.training is not None:
+            if self.training.done:
+                return [Dialogue('mentor', RESULT_OUTRO)]
+            lines = (START_INTRO if self.training.current == 'structure' else ()) + STAGE_INFO[self.training.current]['intro']
+            return [Dialogue(role, text) for role, text in lines]
         if self.chapter3b is not None:
             return GUIDES3B[self.ui_step[4:]][1]
         if self.chapter3 is not None:
