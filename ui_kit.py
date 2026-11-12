@@ -70,14 +70,18 @@ class Gauge(tk.Canvas):
 
 
 class PrimaryButton(tk.Button):
-    """화면의 기본 행동. 일반 ActionButton보다 배경·테두리 대비가 강합니다."""
-    def __init__(self, parent, text, command, **kwargs):
-        super().__init__(parent, text=text, command=command, bg='#14414a', fg=TEXT, activebackground='#1d5d68',
-                         activeforeground=TEXT, disabledforeground=MUTED, relief='flat', bd=0,
+    """화면의 기본 행동. 일반 ActionButton보다 배경·테두리 대비가 강합니다.
+    strong=True(v0.9-4a-2): 화면에서 지금 눌러야 할 단 하나의 행동. 밝은 청록 배경 + 어두운 글자 + 큰 글꼴."""
+    def __init__(self, parent, text, command, strong=False, **kwargs):
+        self.base_bg, hover = ('#38d9d0', '#7ae8e1') if strong else ('#14414a', '#1d5d68')
+        super().__init__(parent, text=text, command=command, bg=self.base_bg, fg=BG if strong else TEXT,
+                         activebackground=hover, activeforeground=BG if strong else TEXT,
+                         disabledforeground=MUTED, relief='flat', bd=0,
                          highlightthickness=2, highlightbackground=CYAN, highlightcolor=CYAN,
-                         font=(FONT, 10, 'bold'), padx=12, pady=7, cursor='hand2', **kwargs)
-        self.bind('<Enter>', lambda _: self.configure(bg='#1d5d68') if self.cget('state') != 'disabled' else None)
-        self.bind('<Leave>', lambda _: self.configure(bg='#14414a'))
+                         font=(FONT, 12 if strong else 10, 'bold'), padx=18 if strong else 12, pady=9 if strong else 7,
+                         cursor='hand2', **kwargs)
+        self.bind('<Enter>', lambda _: self.configure(bg=hover) if self.cget('state') != 'disabled' else None)
+        self.bind('<Leave>', lambda _: self.configure(bg=self.base_bg))
 
 
 class ToggleButton(tk.Button):

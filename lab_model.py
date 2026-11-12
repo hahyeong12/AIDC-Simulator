@@ -168,6 +168,43 @@ def lab_mode(session, rid=None):
     return 'preview', ''
 
 
+LAB_NETWORK_TAB = '네트워크 구조'
+
+
+def diagnosis_lab_target(session, rid):
+    """v0.9-4a-2: [네트워크 진단] 결과창에서 Lab의 네트워크 구조로 바로 갈 수 있는지(조회 전용).
+    가능하면 (Lab 모드, 탭 이름), 아니면 None. 모드 판정은 lab_mode() 그대로라 미리보기 잠금·Stage 권한을 바꾸지 않습니다.
+    심화 연수 중이면 Lab이 여는 요청(연수 요청)과 진단한 요청이 같을 때만 안내합니다."""
+    mode, reason = lab_mode(session, rid)
+    if mode is None or reason:
+        return None
+    training = session.story.training if session.story else None
+    if training is not None and training.rid != rid:
+        return None
+    return mode, LAB_NETWORK_TAB
+
+
+def job_symptom(observation):
+    """v0.9-4a-2: 관찰 중인 고객 작업의 현재 상황 한 문장(조회 전용). 고정 문구 대신 실제 GameSession 상태에서 계산합니다.
+    원인(경로 단절 등)은 말하지 않고 작업 상태만 말하므로 Stage 5의 장애 표시 숨김과 충돌하지 않습니다."""
+    o = observation
+    n = o.network
+    if o.phase == 'finished':
+        if o.tone == 'done':
+            return ('고객 작업은 이미 정상 완료되었습니다. 지금 보이는 결과는 작업이 끝난 뒤의 네트워크 상태'
+                    + (' (주 경로 단절 · 백업 경로 우회 중)' if n.rerouted else '') + '입니다.')
+        return '고객 작업은 실패로 종료되었습니다. 지금 보이는 결과는 사건이 끝난 뒤의 네트워크 상태입니다.'
+    if o.phase in ('incident', 'paused'):
+        return '고객 작업이 멈췄습니다. 고객 연동 단말(sg-edge)에서 AIDC 서버까지의 통신 상태를 직접 조사하세요.'
+    if o.phase == 'recovering':
+        return '장애 조치 뒤 복구 준비 중입니다. 조치 전과 무엇이 달라졌는지 직접 관측해 보세요.'
+    if o.phase == 'running':
+        if n.recovered_by:
+            return '장애 조치가 끝나 고객 작업이 정상 실행 중입니다. 조치 전과 무엇이 달라졌는지 직접 관측해 보세요.'
+        return '고객 작업이 정상 실행 중이고 아직 장애가 없습니다. 정상 상태의 결과를 기준으로 관측해 둘 수 있습니다.'
+    return '고객 작업이 아직 배정되지 않았습니다. 관제실에서 배정하면 작업 데이터가 오가기 시작합니다.'
+
+
 def lab_support(session, rid=None):
     """Lab을 열 수 있으면 빈 문자열, 아니면 이유. 조회 전용이며 상태를 바꾸지 않습니다."""
     return lab_mode(session, rid)[1]

@@ -13,7 +13,7 @@ from chapter3b import (Chapter3bProgress, CHAPTER3B_COUNTRIES, CHAPTER3B_SCENARI
                        impossible_reason, card as hw_card)
 from result_summary import customer_reaction, outcome_key, job_summary, chapter1_summary, chapter2_summary, chapter3_summary, chapter3b_summary
 from chapter2 import Chapter2Progress, CHAPTER2_COUNTRIES, CHAPTER2_SCENARIOS, is_finished
-from training import (TrainingProgress, STAGES, STAGE_INFO, SOURCES, QUESTIONS, TRAINING_COUNTRY, TRAINING_SCENARIO,
+from training import (TrainingProgress, STAGES, STAGE_INFO, SOURCES, QUESTIONS, TRAINING_COUNTRY, TRAINING_SCENARIO, BADGES,
                       fact_statements, make_record, received_options)
 from lab_model import LAB_NETWORK, observe
 from lab_terminal import COMMAND_SPECS, assemble, choice_command, run_command
@@ -1371,6 +1371,84 @@ class GameSession:
             self.selected_id = rid
         return rid
 
+    def training_readiness(self, stage=None):
+        """v0.9-4a-2: Stage가 요구하는 상황이 지금 실제 시뮬레이션에 있는지(조회 전용, 시간·배정·기록 불변).
+
+        key: ready(진행 가능) · setup(미배정 → 고객 작업 먼저) · waiting(실행 중 · 장애 전) · restart(사건 종료 → 다시 받기)
+             · finish(현재 요청을 마쳐야 새 사건) · act(Stage 5 판단 완료 → 관제실 조치) · verify(Stage 5 조치 완료 → 재확인)
+        action: 화면의 주요 행동(tab=해당 탭, control=관제실, restart=연수 사건 다시 받기).
+        Stage 1·5는 끊어진 구간이 실제로 있어야 하고, Stage 2~4는 실행 결과가 항상 현재 상태를 그대로 보여 주므로 언제든 진행할 수 있습니다."""
+        t = self._require_training()
+        stage = stage or t.current
+        info = STAGE_INFO[stage]
+        head = f'Stage {info["no"]}'
+        s = self.runs[t.rid].state
+        network = observe(self, t.rid).network
+
+        def result(key, ready, chip, title, detail, action):
+            return {'key': key, 'ready': ready, 'chip': chip, 'title': title, 'detail': detail, 'action': action}
+
+        ready = result('ready', True, '진행 중', f'{head} · {info["cta"]}', f'[{info["tab"]}] 탭에서 진행합니다.', 'tab')
+        if info['needs'] is None:
+            # 명령 결과는 항상 현재 상태를 보여 줍니다. 지금 어떤 상태의 결과인지를 실제 GameSession 상태로 알려 줍니다.
+            if network.link_ok and network.rerouted:
+                ready['detail'] += ' 지금은 주 경로가 끊긴 채 백업 경로로 우회 중이라 우회 뒤의 결과가 나옵니다.'
+            elif network.link_ok:
+                ready['detail'] += ' 지금은 끊어진 경로가 없어 정상 상태의 결과가 나옵니다.'
+            if s.phase == 'finished':
+                ready['detail'] += ' 고객 작업은 이미 ' + ('정상 완료되었습니다.' if s.succeeded else '실패로 종료되었습니다.')
+            return ready
+        incident = self.training_incident()
+        if stage == 'structure' and incident != 'lost' and any(v == 'down' for v in network.segments.values()):
+            return ready        # 끝난 사건(실패·만료)의 남은 DOWN 표시는 실습 대상이 아닙니다.
+        if stage == 'independent':
+            if incident == 'active':
+                if t.answered('independent', 'cause', t.rid):
+                    return result('act', True, '원인 판단 완료', f'{head} · 관제실에서 원인에 맞는 조치를 선택하세요.',
+                                  '조치는 관제실의 기존 대응 버튼으로 합니다. 조치 뒤 이 화면에서 재확인합니다.', 'control')
+                return ready
+            if incident == 'recovered' and t.stage5_evidence(t.rid)[0]:
+                return result('verify', True, '조치 완료', f'{head} · 같은 관측으로 정상화를 재확인하세요.',
+                              '[가상 터미널]에서 조치 전에 쓴 관측을 다시 실행해 결과를 비교하세요.', 'tab')
+        if self.training_can_restart() or self._training_needs_new_incident():
+            # 왜 새 사건이 필요한지(지난 사건의 실제 결말 + 이 Stage가 요구하는 상황)와 다음 행동을 함께 알려 줍니다.
+            reason = self._training_incident_reason() + ' ' + (
+                'Stage 5는 경로가 끊긴 상태에서 직접 관측한 증거가 있어야 하므로 새 연수 사건이 필요합니다.'
+                if stage == 'independent' else f'{head}는 실제로 끊어진 구간이 있어야 하므로 새 연수 사건이 필요합니다.')
+            if self.training_can_restart():
+                item = result('restart', False, '새 사건 필요', '새 연수 사건 필요 · [연수 사건 다시 받기]를 누르세요.',
+                              reason + ' [연수 사건 다시 받기]로 같은 조건의 새 요청을 받은 뒤, 관제실에서 배정 → 시간 진행 → '
+                              '장애 발생 순서로 진행하세요. 통과한 Stage와 지난 기록은 그대로이며, 다시 받는 것만으로 '
+                              '완료되는 Stage는 없습니다.', 'restart')
+            else:
+                item = result('finish', False, '새 사건 필요', '새 연수 사건 필요 · 현재 요청을 먼저 마치세요.',
+                              reason + ' 같은 고객의 열린 요청은 하나뿐이라, 관제실에서 현재 요청을 마친 뒤(작업 완료 또는 '
+                              '처리 불가 보고) [연수 사건 다시 받기]를 사용할 수 있습니다.', 'control')
+            item['reason'] = reason
+            return item
+        if not s.allocated:
+            return result('setup', False, '실습 준비 필요', '실습 준비 필요 · 고객 작업을 먼저 시작하세요.',
+                          f'관제실 AIDC LINK에서 연수 요청 #{t.rid}를 확인하고 배정하세요. '
+                          'Lab에서 보는 것만으로는 배정·시간 진행이 일어나지 않습니다.', 'control')
+        return result('waiting', False, '작업 진행 중', '작업 진행 중 · 장애 발생 후 진단을 시작합니다.',
+                      f'관제실의 시간 버튼으로 작업을 진행하세요(현재 {s.progress:.0f}%). 장애가 발생하면 {head} 과제가 열립니다.',
+                      'control')
+
+    def _training_incident_reason(self):
+        """지난 연수 사건이 이 Stage에 쓸 수 없게 된 실제 이유 한 문장(조회 전용)."""
+        run = self.runs[self.training.rid]
+        s = run.state
+        if run.request['status'] == 'rejected' or run.terms.get('expired'):
+            return f'지난 연수 요청 #{run.request["id"]}는 거절·만료로 종료되었습니다.'
+        if s.retry_count:
+            return f'지난 연수 요청 #{run.request["id"]}는 재처리로 넘어가 같은 장애를 다시 관찰할 수 없습니다.'
+        if s.phase == 'finished':
+            return (f'지난 연수 사건(요청 #{run.request["id"]})의 고객 작업이 이미 정상 완료되어, 지금은 관측할 장애가 없습니다.'
+                    if s.succeeded else f'지난 연수 사건(요청 #{run.request["id"]})이 실패로 종료되었습니다.')
+        if s.recovered_by:
+            return '장애가 이미 조치되어 경로가 끊긴 상태(조치 전)의 관측을 할 수 없습니다.'
+        return '지난 연수 사건이 종료되었습니다.'
+
     def _training_stage(self, stage, source=None):
         t = self._require_training()
         if stage not in STAGES or (source is not None and SOURCES.get(stage) != source):
@@ -1407,8 +1485,16 @@ class GameSession:
         t, recording = self._training_stage('structure')
         observation = observe(self, t.rid)
         segments = observation.network.segments
-        if segment not in segments and segment != 'job-link':
-            raise ValueError('구조도에 없는 구간입니다.')
+        if segment not in segments:
+            # 서버 → 고객 작업 표시는 작업 배정(논리 관계)이며 네트워크 구간이 아닙니다(v0.9-4a-2).
+            raise ValueError('구조도에 없는 네트워크 구간입니다.')
+        if t.current == 'independent' and not t.done and not t.answered('independent', 'cause', t.rid):
+            # Stage 5는 장애 표시를 숨긴 독립 진단입니다. Stage 1 복습으로 끊어진 구간을 확인할 수 없습니다(기록 없음).
+            return False, 'Stage 5 진행 중에는 구조도 복습으로 장애 위치를 확인할 수 없습니다. 가상 터미널로 직접 관측하세요.'
+        readiness = self.training_readiness('structure')
+        if not readiness['ready']:
+            # 끊어진 구간이 실제로 없으면 과제를 완료할 수 없고, 오답 시도로도 기록하지 않습니다(존재하지 않는 장애 선택 방지).
+            return False, readiness['title'] + ' ' + readiness['detail']
         status = segments.get(segment)
         correct = status == 'down'
         if recording:
@@ -1419,11 +1505,9 @@ class GameSession:
         if correct:
             text = f'맞아요. 주 경로 라우터({router})와 AIDC 게이트웨이({gateway}) 사이 구간이 DOWN입니다. 이 구간을 지나는 데이터가 막혀 있어요.'
         elif status == 'standby':
-            text = '백업 경로는 지금 대기 중일 뿐 끊어진 것이 아니에요. 빨간 ✕ 표시가 있는 구간을 다시 찾아보세요.'
-        elif status in ('up', 'active'):
-            text = '이 구간은 현재 정상(UP)이에요. 끊어진 구간을 다시 찾아보세요.'
+            text = '백업 경로는 지금 대기 중일 뿐 끊어진 것이 아니에요. 범례와 비교해 신호가 끊긴 모양의 연결선을 다시 찾아보세요.'
         else:
-            text = '고객 작업과 서버를 잇는 표시예요. 네트워크 장비 사이의 구간을 골라 보세요.'
+            text = '이 구간은 현재 정상(UP)이에요. 고객 단말에서 서버까지 연결선을 하나씩 따라가며 다시 찾아보세요.'
         return correct, text
 
     def training_answer(self, stage, question, answer):
@@ -1512,24 +1596,29 @@ class GameSession:
                     else '심화 연수 완료 · [연수 결과]에서 결과를 확인하세요.')
         info = STAGE_INFO[t.current]
         head = f'Stage {info["no"]}/5 · {info["title"]}'
-        incident = self.training_incident()
-        run = self.runs[t.rid]
-        if self.training_can_restart():
-            return f'{head} · 연수 사건이 종료되었습니다. [연수 사건 다시 받기]로 같은 장애를 다시 준비하세요.'
-        if not t.done and 'independent' not in t.completed and self._training_needs_new_incident():
-            return (f'{head} · 이 사건으로는 남은 Stage를 진행할 수 없습니다. 현재 요청을 마치면(작업 완료 또는 처리 불가 보고) '
-                    '[연수 사건 다시 받기]를 사용할 수 있습니다.')
         if t.current_passed() and t.can_advance():
-            return f'{head} 완료 · Engineering Lab에서 [다음 Stage 시작]을 누르세요.'
-        if incident == 'waiting':
-            if not run.state.allocated:
-                return f'{head} · 연수용 고객 요청을 확인하고 배정해 작업을 시작하세요. 장애가 나면 Engineering Lab에서 관찰합니다.'
-            return f'{head} · 시간을 진행해 작업을 계속하세요. 장애가 발생하면 Engineering Lab을 여세요.'
-        if t.current == 'independent' and incident == 'recovered':
+            nxt = STAGE_INFO[t.next_stage]
+            return f'{head} 완료 · Engineering Lab에서 [다음 Stage 시작]으로 Stage {nxt["no"]} · {nxt["short"]}을(를) 여세요.'
+        if t.current_passed() and t.practice:
+            return f'{head} 체험 완료 · Engineering Lab에서 다음 Stage를 고르세요.'
+        # v0.9-4a-2: 목표 문구는 현재 Stage가 요구하는 실제 상황(training_readiness)에서 계산합니다.
+        readiness = self.training_readiness()
+        key = readiness['key']
+        if key == 'restart':
+            return (f'{head} · 새 연수 사건 필요 — {self._training_incident_reason()} '
+                    '[연수 사건 다시 받기]로 같은 장애를 다시 준비하세요.')
+        if key == 'finish':
+            return (f'{head} · 새 연수 사건 필요 — {self._training_incident_reason()} 현재 요청을 마치면(작업 완료 또는 처리 불가 보고) '
+                    '[연수 사건 다시 받기]를 사용할 수 있습니다.')
+        if key == 'setup':
+            return f'{head} · 실습 준비 필요 · 연수용 고객 요청을 확인하고 배정해 작업을 시작하세요.'
+        if key == 'waiting':
+            return f'{head} · 작업 진행 중 · 시간을 진행하세요. 장애가 발생하면 Engineering Lab에서 진단합니다.'
+        if key == 'verify':
             return f'{head} · 조치를 마쳤습니다. 같은 관측 도구로 정상화를 재확인하세요.'
-        if t.current == 'independent' and t.answered('independent', 'cause', t.rid):
+        if key == 'act':
             return f'{head} · 원인을 판단했습니다. 관제실에서 원인에 맞는 조치를 선택하세요.'
-        return f'{head} · Engineering Lab에서 진행하세요.'
+        return f'{head} · {info["cta"]} (Engineering Lab)'
 
     def training_status(self):
         """Lab 연수 화면용 조회(상태를 바꾸지 않음). Stage 4 문장의 정답은 포함하지 않습니다."""
@@ -1537,11 +1626,19 @@ class GameSession:
         run = self.runs[t.rid]
         evidence_ok, before = t.stage5_evidence(t.rid)
         assembly = t.valid_assembly()
+        readiness = self.training_readiness()
+        structure_ready = readiness['ready'] if t.current == 'structure' else self.training_readiness('structure')['ready']
+        stages = []
+        for index, key in enumerate(STAGES):
+            badge = t.badge(key, readiness['ready'])
+            hint = f'Stage {index} 통과 후' if badge == 'locked' else ''     # 잠금 해제 조건(바로 앞 Stage)
+            stages.append({'key': key, **STAGE_INFO[key], 'state': t.stage_state(key), 'passed': key in t.completed,
+                           'badge': badge, 'badge_text': BADGES[badge] + (f' · {hint}' if hint else ''), 'hint': hint})
         return {
             'practice': t.practice, 'current': t.current, 'info': STAGE_INFO[t.current], 'passed': t.current_passed(),
             'can_advance': t.can_advance(), 'next': t.next_stage, 'done': t.done, 'count': t.completed_count,
-            'stages': [{'key': key, **STAGE_INFO[key], 'state': t.stage_state(key), 'passed': key in t.completed}
-                       for key in STAGES],
+            'stages': stages, 'readiness': readiness, 'structure_ready': structure_ready,
+            'headline': self._training_headline(t, readiness), 'next_open': t.next_open() if t.practice else None,
             'incident': self.training_incident(), 'can_restart': self.training_can_restart(), 'rid': t.rid,
             'locked_response': self.training_response_locked(run),
             'segment': t.answer('structure', 'segment'), 'impact': t.answer('structure', 'impact'),
@@ -1554,6 +1651,24 @@ class GameSession:
                        'cause': t.answer('independent', 'cause', t.rid), 'recovered': bool(run.state.recovered_by),
                        'verified': t.stage5_verified(t.rid)},
         }
+
+    def _training_headline(self, t, readiness):
+        """Lab 상단 현재 목표 카드: 상태(tone·chip) · 큰 제목 · 짧은 설명 · 주요 행동(action). 조회 전용입니다."""
+        info = STAGE_INFO[t.current]
+        if t.done:
+            return {'tone': 'done', 'chip': '연습 완료' if t.practice else '연수 완료', 'title': '다섯 Stage를 모두 통과했습니다',
+                    'detail': '결과 화면에서 기록을 확인하세요. 완료한 Stage는 언제든 복습할 수 있습니다.', 'action': 'result'}
+        if t.current_passed() and t.can_advance():
+            nxt = STAGE_INFO[t.next_stage]
+            return {'tone': 'ok', 'chip': '진행 가능', 'title': f'Stage {nxt["no"]} · {nxt["short"]}',
+                    'detail': f'Stage {info["no"]} 통과 · {nxt["cta"]}', 'action': 'next', 'stage': t.next_stage}
+        if t.current_passed() and t.practice:
+            key = t.next_open()
+            nxt = STAGE_INFO[key]
+            return {'tone': 'ok', 'chip': f'Stage {info["no"]} 체험 완료', 'title': f'다음 연습 · Stage {nxt["no"]} · {nxt["short"]}',
+                    'detail': nxt['cta'], 'action': 'focus', 'stage': key}
+        return {'tone': 'ok' if readiness['ready'] else 'warn', 'chip': readiness['chip'], 'title': readiness['title'],
+                'detail': readiness['detail'], 'action': readiness['action']}
 
     def training_result(self):
         t = self._require_training()

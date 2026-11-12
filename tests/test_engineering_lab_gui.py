@@ -48,7 +48,12 @@ class EngineeringLabGuiTests(unittest.TestCase):
         self.assertIn('장애', lab.status_chip.cget('text'))
         self.assertIn('DOWN', lab.ops_chips['주 통신 경로'].cget('text'))
         lab.show_tab('네트워크 구조'); self.root.update()
-        self.assertTrue(lab.net_canvas.find_withtag('break'))           # 끊어진 구간 ✕
+        # v0.9-4a-2: Stage 1 진행 중에는 정답을 맞히기 전까지 ✕ 글자를 숨기고 선의 색·모양만 보여 줍니다.
+        self.assertFalse(lab.net_canvas.find_withtag('break'))
+        self.assertTrue(lab.net_canvas.find_withtag('pick:primary-wan'))
+        self.assertTrue(lab.select_segment('primary-wan'))
+        self.root.update()
+        self.assertTrue(lab.net_canvas.find_withtag('break'))           # 맞힌 뒤 끊어진 구간 ✕
         self.root.after(400); self.root.update()
         self.assertTrue(lab.net_canvas.find_withtag('packet'))          # 교육용 흐름 점
         lab.show_tab('서버 내부'); self.root.update()

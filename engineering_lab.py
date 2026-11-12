@@ -12,7 +12,7 @@ v0.9-4a-1: 모드별 구성
 import tkinter as tk
 from tkinter import ttk
 
-from lab_model import LAB_NETWORK, LAB_NOTICE, UNSUPPORTED_INTERNALS, LabLearningTrace, lab_mode, observe
+from lab_model import LAB_NETWORK, LAB_NOTICE, UNSUPPORTED_INTERNALS, LabLearningTrace, job_symptom, lab_mode, observe
 from lab_terminal import (CHOICE_FIT, CHOICE_QUESTION, COMMAND_SPECS, BLOCKS, block_feedback, choice_command,
                           interpret, run_command)
 from scroll_area import ScrollArea
@@ -31,8 +31,15 @@ FLOW_NOTE = '교육용 흐름 애니메이션 · 실제 패킷 캡처가 아닙�
 TERM_BG, TERM_FG = '#050b14', '#cfe3f5'
 OWNER_FILL = {'sg': CYAN, 'jp': BLUE, 'us': '#c5a1ff'}
 GOLD = '#ffe08a'
+# v0.9-4a-2 구조도 선택: 넓은 선택 영역(px)과 마우스를 올렸을 때의 밝은 색, 클릭할 수 있는 구간
+HIT_WIDTH, HOVER_FILL = 26, '#1f3a55'
+# 서버 → 고객 작업의 논리 관계(작업 배정) 표시 색. 네트워크 연결선 색(초록·빨강·회색 대기)과 겹치지 않게 둡니다.
+RELATION = '#7f8fd6'
+# 서버 → 고객 작업 표시는 네트워크 링크가 아니라 '작업 배정'이라는 논리 관계이므로 선택 대상에 넣지 않습니다.
+PICKABLE = ('edge-primary', 'primary-wan', 'edge-backup', 'backup-wan', 'gateway-servers')
 ANIMATION_MS = 120
-STATE_STYLE = {'completed': ('■ 완료', CYAN), 'current': ('▶ 현재', GOLD), 'open': ('○ 선택 가능', TEXT), 'locked': ('잠금', MUTED)}
+# Stage 지도 배지 색(문구·기호는 training.BADGES). 색상만으로 구분하지 않도록 배지 문구를 함께 씁니다.
+BADGE_COLORS = {'passed': CYAN, 'active': GOLD, 'setup': AMBER, 'next': GREEN, 'open': TEXT, 'locked': MUTED}
 EVIDENCE_LABELS = (('near', '가까운 네트워크 장비 관측'), ('remote', '원격 서버(AIDC 쪽) 관측'), ('route', '라우팅 정보 확인'))
 
 
@@ -104,7 +111,7 @@ class EngineeringLabDialog(tk.Toplevel):
         info = tk.Frame(top, bg=BG)
         info.grid(row=1, column=0, columnspan=3, sticky='ew', pady=(6, 0))
         info.columnconfigure(0, weight=1)
-        text = ('관찰과 명령은 게임 시간 · 자원 · 점수 · 고객 동의를 바꾸지 않습니다. 학습 행동만 연수 기록에 저장되며, 복구 조치는 관제실에서 합니다.'
+        text = ('관찰·명령은 게임 시간·자원·점수를 바꾸지 않습니다. 배정·시간 진행·복구 조치는 관제실에서 합니다.'
                 if self.training_mode else
                 '관찰 미리보기입니다. 명령어 학습과 가상 터미널은 심화 연수에서 열리며, 자유 체험은 스토리 메뉴의 [Engineering Lab 연습]을 이용하세요.')
         self.readonly_label = label(info, text, 9, MUTED, anchor='w', justify='left', wraplength=760)
@@ -141,11 +148,17 @@ class EngineeringLabDialog(tk.Toplevel):
         self._refresh_terminal_lock()
 
     def _changed(self):
-        """학습 행동 뒤: 관제실(목표·버튼)과 Lab을 함께 다시 계산합니다."""
+        """학습 행동 뒤: 관제실(목표·버튼)과 Lab을 함께 다시 계산합니다.
+        v0.9-4a-2: 마지막 Stage를 이 화면(재확인 명령)에서 통과하면 [연수 진행] 탭으로 돌아가 결과 화면을 한 번 엽니다."""
+        was_done = bool(self.status and self.status['done'])
         if self.on_change is not None:
             self.on_change()
         if self.winfo_exists():
             self.refresh()
+        if self.training_mode and not was_done and self.status and self.status['done']:
+            self.show_tab(TRAINING_TAB)
+            if self.on_result is not None:
+                self.on_result()
 
     def _destroyed(self, event):
         if event.widget is self and self.anim_timer is not None:
@@ -214,14 +227,28 @@ class EngineeringLabDialog(tk.Toplevel):
 
     # ── 연수 진행 ─────────────────────────────────────────
     def _build_training(self, frame):
+        """v0.9-4a-2 배치: ① 현재 목표 카드(고정) ② Stage 지도(고정) ③ 과제 상세(스크롤) ④ 주요 행동 버튼(하단 고정)."""
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(2, weight=1)
-        head = tk.Frame(frame, bg=BG)
-        head.grid(row=0, sticky='ew', padx=10, pady=(10, 4))
-        self.progress_label = label(head, '', 15, TEXT, True)
-        self.progress_label.pack(side='left')
-        self.mode_chip = StatusChip(head, 'idle', size=9)
-        self.mode_chip.pack(side='left', padx=10)
+        card = tk.Frame(frame, bg=PANEL, highlightthickness=2, highlightbackground=BORDER, padx=14, pady=10)
+        card.grid(row=0, sticky='ew', padx=10, pady=(10, 6))
+        card.columnconfigure(0, weight=1)
+        self.goal_card = card
+        top = tk.Frame(card, bg=PANEL)
+        top.grid(row=0, column=0, columnspan=2, sticky='ew')
+        self.goal_chip = StatusChip(top, 'idle', size=11)
+        self.goal_chip.pack(side='left')
+        self.mode_chip = StatusChip(top, 'idle', size=9)
+        self.mode_chip.pack(side='left', padx=8)
+        self.progress_label = label(top, '', 10, MUTED, True)
+        self.progress_label.pack(side='right')
+        self.goal_title = label(card, '', 17, TEXT, True, anchor='w', justify='left', wraplength=560)
+        self.goal_title.grid(row=1, column=0, sticky='w', pady=(6, 0))
+        self.goal_detail = label(card, '', 10, MUTED, anchor='w', justify='left', wraplength=560)
+        self.goal_detail.grid(row=2, column=0, sticky='w', pady=(2, 0))
+        self.progress_gauge = Gauge(card, '진행률', height=58, bar=14)
+        self.progress_gauge.configure(width=260)
+        self.progress_gauge.grid(row=1, column=1, rowspan=2, sticky='e', padx=(12, 0))
         self.stage_map = tk.Frame(frame, bg=BG)
         self.stage_map.grid(row=1, sticky='ew', padx=10, pady=(0, 6))
         self.stage_boxes = {}
@@ -230,7 +257,7 @@ class EngineeringLabDialog(tk.Toplevel):
             box = tk.Frame(self.stage_map, bg=RAISED, highlightthickness=2, highlightbackground=BORDER, padx=8, pady=6,
                            cursor='hand2')
             box.grid(row=0, column=index, sticky='nsew', padx=(0, 6))
-            state = label(box, '', 9, MUTED, True, anchor='w')
+            state = label(box, '', 9, MUTED, True, anchor='w', justify='left', wraplength=135)
             state.pack(anchor='w')
             title = label(box, f'Stage {index+1}\n{STAGE_INFO[key]["short"]}', 10, TEXT, True, anchor='w', justify='left')
             title.pack(anchor='w')
@@ -244,30 +271,33 @@ class EngineeringLabDialog(tk.Toplevel):
 
     def _refresh_training(self):
         st = self.status
+        head = st['headline']
+        self.goal_chip.set(head['tone'], head['chip'])
+        self.goal_title.configure(text=head['title'], fg=GREEN if head['action'] in ('next', 'focus') else TEXT)
+        self.goal_detail.configure(text=head['detail'])
+        self.goal_card.configure(highlightbackground=tone_color(head['tone']))
+        self.progress_gauge.set(st['count'], 5, f'{st["count"]} / 5', 'done' if st['done'] else 'ok',
+                                '체험한 Stage' if st['practice'] else '통과한 Stage')
+        self.progress_label.configure(text=f'요청 #{st["rid"]} · {self.obs.time_label}')
         if st['practice']:
-            self.progress_label.configure(text=f'Engineering Lab 연습 · 체험한 Stage {st["count"]} / 5')
-            self.mode_chip.set('warn', '연습 모드 · 정규 연수 기록 아님')
+            self.mode_chip.set('warn', '연습 모드 · 정규 기록 아님')
         else:
-            self.progress_label.configure(text=f'심화 연수 진행률 {st["count"]} / 5')
             self.mode_chip.set('done' if st['done'] else 'ok', '연수 완료' if st['done'] else '정규 연수')
         for item in st['stages']:
             box, state, title = self.stage_boxes[item['key']]
-            text, color = STATE_STYLE[item['state']]
-            if item['state'] == 'current' and item['passed']:
-                text, color = '■ 통과 · 현재', GREEN
-            elif item['state'] in ('open', 'current') and item['passed']:
-                text = text+' · 통과'
-            state.configure(text=text, fg=color)
-            title.configure(fg=MUTED if item['state'] == 'locked' else TEXT)
-            box.configure(highlightbackground=color if item['state'] == 'current' else BORDER)
+            color = BADGE_COLORS[item['badge']]
+            state.configure(text=item['badge_text'], fg=color)
+            title.configure(fg=MUTED if item['badge'] == 'locked' else TEXT)
+            focus = item['state'] == 'current' or item['badge'] == 'next'
+            box.configure(highlightbackground=color if focus else BORDER, bg=RAISED)
         body = self.training_area.body
         for widget in body.winfo_children():
             widget.destroy()
         body.columnconfigure(1, weight=1)
         info = st['info']
-        label(body, f'Stage {info["no"]} · {info["title"]}', 17, CYAN, True, anchor='w').grid(
+        label(body, f'Stage {info["no"]} · {info["title"]}', 14, CYAN, True, anchor='w').grid(
             row=0, column=0, columnspan=2, sticky='w', padx=8, pady=(6, 2))
-        label(body, info['goal'], 11, TEXT, anchor='w', justify='left', wraplength=900).grid(
+        label(body, info['goal'], 10, TEXT, anchor='w', justify='left', wraplength=900).grid(
             row=1, column=0, columnspan=2, sticky='w', padx=8, pady=(0, 6))
         portrait = tk.Canvas(body, width=44, height=60, bd=0, highlightthickness=0, bg=BG)
         portrait.grid(row=2, column=0, sticky='nw', padx=(8, 6))
@@ -278,8 +308,10 @@ class EngineeringLabDialog(tk.Toplevel):
         task = tk.Frame(body, bg=PANEL, padx=12, pady=10)
         task.grid(row=3, column=0, columnspan=2, sticky='ew', padx=8, pady=(8, 4))
         task.columnconfigure(0, weight=1)
-        self._incident_banner(task)
-        getattr(self, '_task_'+st['current'])(task)
+        if not st['passed'] and not st['readiness']['ready']:
+            self._task_prepare(task)
+        else:
+            getattr(self, '_task_'+st['current'])(task)
         text, color = self.feedback
         self.training_feedback = label(body, text, 11, color, True, anchor='w', justify='left', wraplength=900)
         self.training_feedback.grid(row=4, column=0, columnspan=2, sticky='w', padx=8, pady=(4, 2))
@@ -288,18 +320,25 @@ class EngineeringLabDialog(tk.Toplevel):
                   wraplength=900).grid(row=5, column=0, columnspan=2, sticky='w', padx=8, pady=(4, 8))
         self._render_training_bar()
 
-    def _incident_banner(self, task):
+    def _task_prepare(self, task):
+        """실습 준비 안내: 현재 Stage가 요구하는 상황(장애)이 아직 없을 때. 단계만 보여 주고 대신 실행하지 않습니다."""
         st = self.status
-        text = ''
-        if st['can_restart']:
-            text = '연수 사건이 끝났습니다. 아래 [연수 사건 다시 받기]로 같은 장애를 다시 준비할 수 있습니다(통과한 Stage는 유지).'
-        elif st['incident'] == 'waiting':
-            run = self.session.runs[st['rid']]
-            text = ('장애가 아직 발생하지 않았습니다. 관제실에서 연수 요청을 배정하고 시간을 진행하세요.' if run.state.allocated else
-                    '관제실 AIDC LINK에서 연수 요청을 확인하고 배정해 작업을 시작하세요. 장애가 발생하면 이 화면에서 진행합니다.')
-        if text:
-            label(task, '⚠ '+text, 10, AMBER, True, anchor='w', justify='left', wraplength=860).grid(
-                row=0, sticky='w', pady=(0, 8))
+        key = st['readiness']['key']
+        run = self.session.runs[st['rid']]
+        allocated = run.state.allocated
+        label(task, '실습 준비 · 관제실에서 직접 진행하세요', 11, AMBER, True, anchor='w').grid(row=0, sticky='w', pady=(0, 6))
+        if key in ('restart', 'finish'):
+            steps = ((key == 'restart', '지난 연수 요청 마무리 (작업 완료 또는 처리 불가 보고)'),
+                     (False, '[연수 사건 다시 받기]로 같은 조건의 새 요청 접수'),
+                     (False, '배정 → 시간 진행 → 장애 발생 후 이 Stage 진행'))
+        else:
+            steps = ((allocated, f'연수 요청 #{st["rid"]} 확인 · 운영 모드 선택 · 배정'),
+                     (False, f'시간 진행 (현재 진행률 {run.state.progress:.0f}%) → 장애 발생'),
+                     (False, f'장애 발생 후 Stage {st["info"]["no"]} · {st["info"]["cta"]}'))
+        for row, (done, text) in enumerate(steps, start=1):
+            self._check(task, row, done, text)
+        label(task, 'Lab은 관찰 전용입니다. 여기서 보는 것만으로는 배정·시간 진행이 일어나지 않습니다.', 9, MUTED,
+              anchor='w').grid(row=len(steps)+1, sticky='w', pady=(6, 0))
 
     def _question(self, task, row, stage, question, options, answered):
         label(task, QUESTIONS[(stage, question)]['prompt'] if (stage, question) in QUESTIONS else '', 11, TEXT, True,
@@ -384,7 +423,7 @@ class EngineeringLabDialog(tk.Toplevel):
     def _task_independent(self, task):
         st = self.status
         s5 = st['stage5']
-        label(task, '증상: 싱가포르 고객의 작업이 멈췄습니다. 고객 연동 단말에서 AIDC 서버까지의 상태를 직접 조사하세요.', 11, TEXT, True,
+        label(task, '현재 상황: ' + job_symptom(self.obs), 11, TEXT, True,
               anchor='w', justify='left', wraplength=860).grid(row=1, sticky='w', pady=(0, 6))
         self._check(task, 2, s5['evidence_ok'], f'① 조치 전 직접 관측한 증거 확보 (현재 {s5["evidence_count"]}개)')
         cause = s5['cause']
@@ -392,34 +431,48 @@ class EngineeringLabDialog(tk.Toplevel):
         if s5['evidence_ok'] and not (cause and cause['correct']):
             self._question(task, 4, 'independent', 'cause', QUESTIONS[('independent', 'cause')]['options'], cause)
         self._check(task, 6, s5['recovered'], '③ 관제실에서 원인에 맞는 조치 선택 (기존 대응 버튼)')
-        if cause and cause['correct'] and not s5['recovered']:
-            PrimaryButton(task, '관제실로 돌아가 조치하기', self.destroy).grid(row=7, sticky='w', pady=(4, 4))
         self._check(task, 8, s5['verified'], '④ 같은 관측 도구로 정상화 재확인 (가상 터미널)')
 
     def _render_training_bar(self):
+        """하단 고정 영역: 현재 상황에서 눌러야 할 주요 행동 하나를 고대비 버튼으로 둡니다(현재 목표 카드의 action)."""
         bar = self.training_bar
         for widget in bar.winfo_children():
             widget.destroy()
         st = self.status
         info = st['info']
-        if st['done']:
+        head = st['headline']
+        action = head['action']
+        self.primary_action = action
+        if action == 'result':
             if self.on_result is not None:
-                PrimaryButton(bar, '연수 결과 보기 ▶', self.on_result).pack(side='left')
-            label(bar, '다섯 Stage를 모두 통과했습니다. 완료한 Stage는 언제든 복습할 수 있습니다.', 10, GREEN, True).pack(side='left', padx=10)
-        elif st['can_advance']:
-            nxt = STAGE_INFO[st['next']]
-            PrimaryButton(bar, f'다음 Stage 시작 ▶  Stage {nxt["no"]} · {nxt["short"]}', self.start_next).pack(side='left')
+                PrimaryButton(bar, '연수 결과 보기 ▶', self.on_result, strong=True).pack(side='left')
+        elif action == 'next':
+            nxt = STAGE_INFO[head['stage']]
+            PrimaryButton(bar, f'다음 Stage 시작 ▶  Stage {nxt["no"]} · {nxt["short"]}', self.start_next,
+                          strong=True).pack(side='left')
+        elif action == 'focus':
+            nxt = STAGE_INFO[head['stage']]
+            PrimaryButton(bar, f'다음 연습 ▶  Stage {nxt["no"]} · {nxt["short"]}',
+                          lambda k=head['stage']: self.on_stage_click(k), strong=True).pack(side='left')
+        elif action == 'restart':
+            PrimaryButton(bar, '연수 사건 다시 받기 ▶', self.restart_incident, strong=True).pack(side='left')
+        elif action == 'control':
+            PrimaryButton(bar, '관제실로 돌아가기 ▶', self.destroy, strong=True).pack(side='left')
         else:
-            PrimaryButton(bar, f'{info["tab"]} 탭에서 진행하기 ▶', lambda: self.show_tab(info['tab'])).pack(side='left')
-        if st['can_restart']:
+            PrimaryButton(bar, f'{info["tab"]} 탭에서 진행하기 ▶', lambda: self.show_tab(info['tab']),
+                          strong=True).pack(side='left')
+        if st['can_restart'] and action != 'restart':
             ActionButton(bar, '연수 사건 다시 받기', self.restart_incident, accent=AMBER).pack(side='left', padx=8)
         if st['practice']:
-            label(bar, '연습: 위 단계 지도에서 원하는 Stage를 고를 수 있습니다.', 9, MUTED).pack(side='right')
+            label(bar, '연습: Stage 지도에서 원하는 Stage를 고를 수 있습니다.', 9, MUTED).pack(side='right')
 
     def on_stage_click(self, key):
         st = self.status
         item = next(s for s in st['stages'] if s['key'] == key)
         info = STAGE_INFO[key]
+        if item['badge'] == 'next':
+            # 정규 연수: 통과 후 '진행 가능'으로 표시된 다음 Stage를 누르면 [다음 Stage 시작]과 같습니다.
+            return self.start_next()
         if st['practice']:
             try:
                 self.session.focus_training_stage(key)
@@ -427,9 +480,11 @@ class EngineeringLabDialog(tk.Toplevel):
                 self.notify(str(exc))
                 return
             self.feedback = ('', TEXT)
+            self.net_feedback = None
             self._changed()
         elif item['state'] == 'locked':
-            self.notify(f'잠금: Stage {info["no"]} · {info["short"]}은(는) 앞 Stage를 통과하고 [다음 Stage 시작]을 눌러야 열립니다.')
+            self.notify(f'잠금: Stage {info["no"]} · {info["short"]}은(는) {item["hint"] or "앞 Stage 통과 후"} '
+                        '[다음 Stage 시작]으로 열립니다.')
         elif item['state'] == 'completed':
             self.notify(f'복습: Stage {info["no"]} · {info["short"]}은(는) {info["tab"]} 탭에서 다시 해 볼 수 있습니다(진행 기록은 바뀌지 않음).',
                         CYAN)
@@ -444,6 +499,7 @@ class EngineeringLabDialog(tk.Toplevel):
             self.notify(str(exc))
             return None
         self.feedback = ('', TEXT)
+        self.net_feedback = None
         self.fact_choices = {}
         self._changed()
         self.set_level(self._preferred_level())
@@ -465,6 +521,7 @@ class EngineeringLabDialog(tk.Toplevel):
             self.notify(str(exc))
             return None
         self.rid = self.session.training.rid
+        self.net_feedback = None
         self.feedback = ('새 연수 사건을 접수했습니다. 관제실에서 배정하고 시간을 진행해 장애를 다시 준비하세요.', CYAN)
         self._changed()
         return self.rid
@@ -538,10 +595,19 @@ class EngineeringLabDialog(tk.Toplevel):
         self.net_canvas = tk.Canvas(frame, bg=PANEL, highlightthickness=1, highlightbackground=BORDER, bd=0)
         self.net_canvas.grid(row=0, sticky='nsew', padx=8, pady=(8, 4))
         self.net_canvas.bind('<Configure>', lambda _: self._draw_network())
+        # v0.9-4a-2: 구간의 모든 그림 요소(넓은 선택 영역·선·✕·라벨)가 같은 'pick:구간' 태그를 공유합니다.
+        # 예전에는 선 위에 그린 ✕·발광선이 클릭을 가로채 끊어진 지점을 눌러도 반응이 없었습니다.
+        self.hover_segment = None
+        self.net_feedback = None
+        for seg_id in PICKABLE:
+            tag = 'pick:'+seg_id
+            self.net_canvas.tag_bind(tag, '<Button-1>', lambda _, s=seg_id: self.select_segment(s))
+            self.net_canvas.tag_bind(tag, '<Enter>', lambda _, s=seg_id: self._hover(s))
+            self.net_canvas.tag_bind(tag, '<Leave>', lambda _: self._hover(None))
         legend = tk.Frame(frame, bg=BG)
         legend.grid(row=1, sticky='ew', padx=8, pady=(0, 6))
-        for text, color in (('━ 정상 연결', GREEN), ('┅ ✕ 단절 · 영향 구간', RED), ('┅ 대기 중인 백업 경로', MUTED),
-                            ('● 데이터 흐름(교육용)', CYAN)):
+        for text, color in (('━ 정상 연결', GREEN), ('┅ 빨간 점선: 단절 (신호 없음)', RED), ('┅ 대기 중인 백업 경로', MUTED),
+                            ('● 데이터 흐름(교육용)', CYAN), ('┈▸ 작업 배정 · 네트워크 링크 아님', RELATION)):
             label(legend, text, 9, color, True).pack(side='left', padx=(0, 14))
         self.net_task = label(frame, '', 10, GOLD, True, anchor='w', justify='left', wraplength=900)
         self.net_task.grid(row=2, sticky='w', padx=10)
@@ -562,7 +628,26 @@ class EngineeringLabDialog(tk.Toplevel):
 
     @property
     def segment_selectable(self):
-        return self.training_mode and not self.stage_locked('structure')
+        """구간 선택 가능: 연수/연습이고 Stage 1이 잠기지 않았으며, 실제로 끊어진 구간이 있을 때만(엔진도 다시 검증).
+        Stage 5에서 장애 표시를 숨긴 동안에는 Stage 1 복습 클릭으로 정답이 드러나지 않도록 선택하지 않습니다."""
+        return bool(self.training_mode and not self.stage_locked('structure') and self.status['structure_ready']
+                    and not self.hide_answers)
+
+    @property
+    def conceal_break(self):
+        """Stage 1 진행 중 정답 구간을 맞히기 전에는 ✕·'DOWN' 글자를 숨기고 선의 색·모양(관찰 대상)만 보여 줍니다."""
+        st = self.status
+        return bool(self.training_mode and st and st['current'] == 'structure' and not st['passed']
+                    and st['structure_ready'] and not (st['segment'] and st['segment']['correct']))
+
+    def _hover(self, segment):
+        """선택 가능한 구간 위에 마우스를 올리면 손가락 커서와 밝은 선택 영역으로 표시합니다(화면만 변경)."""
+        canvas = self.net_canvas
+        self.hover_segment = segment if self.segment_selectable else None
+        canvas.configure(cursor='hand2' if self.hover_segment else '')
+        canvas.itemconfigure('hit', fill=PANEL)
+        if self.hover_segment:
+            canvas.itemconfigure('hit:'+self.hover_segment, fill=HOVER_FILL)
 
     def select_segment(self, segment):
         """Stage 1: 구조도의 연결선을 직접 선택합니다(판정은 세션이 현재 관찰 상태로 합니다)."""
@@ -574,6 +659,7 @@ class EngineeringLabDialog(tk.Toplevel):
             self.notify(str(exc))
             return None
         self.feedback = (('✔ ' if correct else '✕ ')+text, GREEN if correct else AMBER)
+        self.net_feedback = self.feedback
         self.net_task.configure(text=self.feedback[0], fg=self.feedback[1])
         self._changed()
         return correct
@@ -587,41 +673,63 @@ class EngineeringLabDialog(tk.Toplevel):
         seg = {k: ('hidden' if hidden else v) for k, v in n.segments.items()}
         used = () if hidden else self._used_path_nodes()
         chosen = (self.status or {}).get('segment') if self.training_mode else None
+        selectable, conceal = self.segment_selectable, self.conceal_break
+
+        def tags(seg_id, *names):
+            return names + (seg_id,) + (('pick:'+seg_id,) if selectable else ())
+
         links = [('edge-primary', 'edge', 'primary'), ('primary-wan', 'primary', 'gateway'),
                  ('edge-backup', 'edge', 'backup'), ('backup-wan', 'backup', 'gateway')]
+        if selectable:
+            # 얇은 선도 쉽게 고를 수 있도록 넓은 선택 영역을 가장 먼저(맨 아래에) 그립니다. 마우스를 올리면 밝아집니다.
+            hits = [(seg_id, nodes[a], nodes[b], HIT_WIDTH) for seg_id, a, b in links]
+            for server in o.servers:
+                hits.append(('gateway-servers', nodes['gateway'], nodes[server.key], HIT_WIDTH-8))
+            for seg_id, (x1, y1), (x2, y2), width in hits:
+                canvas.create_line(x1, y1, x2, y2, fill=PANEL, width=width, capstyle='round',
+                                   tags=tags(seg_id, 'hit', 'hit:'+seg_id))
         for seg_id, a, b in links:
             (x1, y1), (x2, y2) = nodes[a], nodes[b]
-            if self.segment_selectable:
-                # 얇은 선도 쉽게 고를 수 있도록 배경색의 넓은 선택 영역을 먼저 그립니다.
-                hit = canvas.create_line(x1, y1, x2, y2, fill=PANEL, width=22, tags=('hit', 'hit:'+seg_id))
-                canvas.tag_bind(hit, '<Button-1>', lambda _, s=seg_id: self.select_segment(s))
             if chosen and chosen['answer'] == seg_id:
-                canvas.create_line(x1, y1, x2, y2, fill=GOLD, width=10, tags=('chosen', seg_id))
+                canvas.create_line(x1, y1, x2, y2, fill=GREEN if chosen['correct'] else AMBER, width=12, capstyle='round',
+                                   tags=tags(seg_id, 'chosen'))
             if a in used and b in used:
-                canvas.create_line(x1, y1, x2, y2, fill='#1b4b52', width=12, capstyle='round', tags=('glow', seg_id))
+                canvas.create_line(x1, y1, x2, y2, fill='#1b4b52', width=12, capstyle='round', tags=tags(seg_id, 'glow'))
             color, width, dash = self._segment_style(seg[seg_id])
-            line = canvas.create_line(x1, y1, x2, y2, fill=color, width=width, dash=dash, tags=('link', seg_id))
-            if self.segment_selectable:
-                canvas.tag_bind(line, '<Button-1>', lambda _, s=seg_id: self.select_segment(s))
+            canvas.create_line(x1, y1, x2, y2, fill=color, width=width, dash=dash, tags=tags(seg_id, 'link'))
             mx, my = (x1+x2)/2, (y1+y2)/2
-            if seg[seg_id] == 'down':
-                canvas.create_text(mx, my, text='✕', fill=RED, font=(FONT, 20, 'bold'), tags=('break', seg_id))
-                canvas.create_text(mx, my-24, text='DOWN · 영향 구간', fill=RED, font=(FONT, 9, 'bold'), tags=('break-label',))
+            if chosen and chosen['answer'] == seg_id:
+                canvas.create_text(mx, my+36, text='✔ 선택한 구간' if chosen['correct'] else '선택한 구간 · 정상',
+                                   fill=GREEN if chosen['correct'] else AMBER, font=(FONT, 9, 'bold'),
+                                   tags=tags(seg_id, 'chosen-label'))
+            if seg[seg_id] == 'down' and not conceal:
+                canvas.create_text(mx, my, text='✕', fill=RED, font=(FONT, 20, 'bold'), tags=tags(seg_id, 'break'))
+                canvas.create_text(mx, my-24, text='DOWN · 영향 구간', fill=RED, font=(FONT, 9, 'bold'),
+                                   tags=tags(seg_id, 'break-label'))
             elif seg_id == 'backup-wan' and not hidden:
                 canvas.create_text(mx, my+18, text=('사용 중' if seg[seg_id] == 'active' else '대기') + f' · 용량 {n.backup_capacity}',
-                                   fill=GREEN if seg[seg_id] == 'active' else MUTED, font=(FONT, 9, 'bold'), tags=('seg-label',))
-            elif seg_id == 'primary-wan' and not hidden:
-                canvas.create_text(mx, my-18, text=f'가용 {n.available}', fill=GREEN, font=(FONT, 9, 'bold'), tags=('seg-label',))
+                                   fill=GREEN if seg[seg_id] == 'active' else MUTED, font=(FONT, 9, 'bold'),
+                                   tags=tags(seg_id, 'seg-label'))
+            elif seg_id == 'primary-wan' and not hidden and not conceal:
+                canvas.create_text(mx, my-18, text=f'가용 {n.available}', fill=GREEN, font=(FONT, 9, 'bold'),
+                                   tags=tags(seg_id, 'seg-label'))
         gx, gy = nodes['gateway']
         for server in o.servers:
             sx, sy = nodes[server.key]
             job = server.has_job
-            canvas.create_line(gx, gy, sx, sy, fill=CYAN if job else BORDER, width=3 if job else 1, tags=('link', 'gateway-servers'))
-            if job:
-                jx, jy = nodes['job']
-                running = o.phase in ('running', 'recovering')
-                canvas.create_line(sx, sy, jx, jy, fill=CYAN if running else RED, width=3, dash=None if running else (5, 4),
-                                   tags=('link', 'job-link'))
+            canvas.create_line(gx, gy, sx, sy, fill=CYAN if job else BORDER, width=3 if job else 1,
+                               tags=tags('gateway-servers', 'link'))
+        # 서버 → 고객 작업: 네트워크 링크가 아니라 '이 서버에 작업이 배정됨'이라는 논리 관계입니다.
+        # 장애 상태와 무관하게 항상 같은 가는 회색 점선 + 화살표로 그리고, 선택·흐름 점의 대상이 아닙니다.
+        # 작업이 멈췄는지는 선이 아니라 '고객 작업' 상자의 상태 문구·색으로 보여 줍니다.
+        jx, jy = nodes['job']
+        for server in o.servers:
+            if server.has_job:
+                sx, sy = nodes[server.key]
+                canvas.create_line(sx+64, sy, jx-70, jy, fill=RELATION, width=1, dash=(1, 3), arrow='last',
+                                   arrowshape=(8, 9, 3), tags=('job-relation',))
+        if o.job_servers:
+            canvas.create_text(jx, jy-50, text='작업 배정 (논리 관계)', fill=RELATION, font=(FONT, 8), tags=('job-relation-label',))
         router = LAB_NETWORK['routers']
         self._node(canvas, nodes['edge'], f'고객 {o.code.upper()}', f'{LAB_NETWORK["host"]}\neth0 192.168.10.5\neth1 192.168.20.5', 'ok')
         self._node(canvas, nodes['primary'], router['primary']['label'], f'{router["primary"]["name"]}\n{router["primary"]["address"]}', 'ok')
@@ -636,9 +744,13 @@ class EngineeringLabDialog(tk.Toplevel):
                        accent=server.has_job)
         job_phase = '작업 중단' if hidden and o.tone == 'fault' else o.phase_label
         self._node(canvas, nodes['job'], '고객 작업', f'{o.code.upper()} · {o.progress:.0f}%\n{job_phase}',
-                   'warn' if hidden and o.tone == 'fault' else o.tone)
+                   'warn' if hidden and o.tone == 'fault' else o.tone, logical=True)
         if hidden:
             status, color = 'Stage 5 · 장애 표시 숨김 — 가상 터미널로 직접 관측하세요', AMBER
+        elif self.training_mode and self.status['current'] == 'structure' and not self.status['passed'] \
+                and self.status['structure_ready']:
+            # Stage 1 통과 전에는 결론(어느 구간 · 어떤 영향)을 글로 알려 주지 않습니다. 선의 색·모양이 관찰 대상입니다.
+            status, color = '구조도 관찰 · 연결선의 색과 모양을 범례와 비교해 보세요', GOLD
         else:
             status = ('주 경로 DOWN — 고객 단말에서 보낸 데이터가 AIDC에 도달하지 못합니다' if not n.link_ok else
                       '백업 경로로 우회 중 — 데이터가 백업 라우터를 거쳐 전달됩니다' if n.rerouted else '주 경로 정상')
@@ -648,19 +760,32 @@ class EngineeringLabDialog(tk.Toplevel):
                            font=(FONT, 9), tags=('status',))
         if not o.transferring:
             canvas.create_text(w/2, h-14, text=f'데이터 전송 없음 · 작업 {o.phase_label}', fill=MUTED, font=(FONT, 9), tags=('status',))
-        if self.segment_selectable and self.status['current'] == 'structure':
-            if not self.net_task.cget('text'):
-                self.net_task.configure(text='Stage 1 · 끊어진 구간이라고 생각하는 연결선을 직접 클릭하세요.', fg=GOLD)
-        elif not self.segment_selectable or (self.status and self.status['current'] != 'structure'):
-            self.net_task.configure(text='')
+        self.net_task.configure(**dict(zip(('text', 'fg'), self._net_task_text())))
+        if self.hover_segment:
+            self._hover(self.hover_segment)
         self._draw_packets()
 
-    def _node(self, canvas, center, title, sub, tone, small=False, accent=False):
+    def _net_task_text(self):
+        """구조도 아래 안내: Stage 1이면 실제 상황(준비 필요/진행 중)과 마지막 선택 결과를, 아니면 복습 결과만."""
+        st = self.status
+        if not self.training_mode or self.stage_locked('structure'):
+            return '', GOLD
+        if st['current'] == 'structure' and not st['structure_ready']:
+            return '⚠ ' + st['readiness']['title'], AMBER
+        if self.net_feedback and self.segment_selectable:
+            return self.net_feedback
+        if st['current'] == 'structure' and not st['passed']:
+            return 'Stage 1 · 끊어진 구간이라고 생각하는 연결선을 직접 클릭하세요. 선 위에 마우스를 올리면 선택 영역이 밝아집니다.', GOLD
+        return '', GOLD
+
+    def _node(self, canvas, center, title, sub, tone, small=False, accent=False, logical=False):
+        """장비 상자. logical=True는 네트워크 장비가 아닌 논리 대상(고객 작업)이라 점선 테두리로 구분합니다."""
         x, y = center
         bw, bh = (64, 30) if small else (70, 36)
         color = tone_color(tone)
         canvas.create_rectangle(x-bw, y-bh, x+bw, y+bh, fill=RAISED, outline=CYAN if accent else color,
-                                width=3 if accent else 2, tags=('node',))
+                                width=3 if accent else 2, dash=(4, 3) if logical else None,
+                                tags=('node', 'logical-node') if logical else ('node',))
         canvas.create_text(x, y-bh+11, text=title, fill=color, font=(FONT, 9, 'bold'), tags=('node-title',))
         canvas.create_text(x, y+6, text=sub, fill=TEXT, font=(MONO, 8), justify='center', tags=('node-sub',))
 
@@ -680,7 +805,8 @@ class EngineeringLabDialog(tk.Toplevel):
             return [nodes['edge'], nodes['primary'], ((x1+x2)/2, (y1+y2)/2)], True
         points = [nodes['edge'], nodes[n.active_path], nodes['gateway']]
         if o.job_servers:
-            points += [nodes[o.job_servers[0]], nodes['job']]
+            # 데이터는 네트워크로 서버까지 갑니다. 서버 → 고객 작업은 논리 관계라 흐름 점을 그리지 않습니다.
+            points.append(nodes[o.job_servers[0]])
         return points, False
 
     def _draw_packets(self):
@@ -701,7 +827,7 @@ class EngineeringLabDialog(tk.Toplevel):
             ratio = distance/(lengths[index] or 1)
             x, y = ax+(bx-ax)*ratio, ay+(by-ay)*ratio
             color = RED if dropped and t > .85 else CYAN
-            canvas.create_oval(x-5, y-5, x+5, y+5, fill=color, outline='', tags=('packet',))
+            canvas.create_oval(x-5, y-5, x+5, y+5, fill=color, outline='', state='disabled', tags=('packet',))  # 클릭을 가로채지 않음
 
     # ── 서버 내부 ──────────────────────────────────────────
     def _build_servers(self, frame):
@@ -1034,8 +1160,10 @@ class EngineeringLabDialog(tk.Toplevel):
     def _build_advanced(self, body):
         body.columnconfigure(0, weight=1)
         label(body, 'L3 · 직접 입력 (힌트 최소화)', 9, MUTED, True).grid(row=0, sticky='w', padx=4, pady=(4, 0))
-        label(body, '고객 작업이 멈췄습니다. 고객 연동 단말(sg-edge)에서 AIDC 서버까지의 통신 상태를 직접 조사하세요.', 14, TEXT, True,
-              anchor='w', justify='left', wraplength=900).grid(row=1, sticky='w', padx=4, pady=(4, 8))
+        # v0.9-4a-2: 고정 문구('작업이 멈췄습니다') 대신 실제 작업 상태를 refresh 때마다 다시 계산합니다.
+        self.advanced_symptom = label(body, job_symptom(self.obs), 14, TEXT, True,
+                                      anchor='w', justify='left', wraplength=900)
+        self.advanced_symptom.grid(row=1, sticky='w', padx=4, pady=(4, 8))
         label(body, '이 단계는 명령어 선택지 · 블록 · 해석 도움을 제공하지 않습니다. 필요한 명령은 터미널의 help로 찾을 수 있습니다.\n'
               '학습 단계는 게임 운영 점수와 분리되어 있으며, 숙련도를 인증하지 않습니다.',
               10, MUTED, anchor='w', justify='left', wraplength=900).grid(row=2, sticky='w', padx=4, pady=(0, 10))
@@ -1043,6 +1171,8 @@ class EngineeringLabDialog(tk.Toplevel):
 
     def _refresh_learning(self):
         """잠금 표시를 갱신하고, 선택한 객관식·조립 결과를 현재 상태로 다시 계산합니다(표시만, 기록 없음)."""
+        if getattr(self, 'advanced_symptom', None) is not None:
+            self.advanced_symptom.configure(text=job_symptom(self.obs))
         self._refresh_level_buttons()
         if self.level is not None and self.stage_locked_for_level(self.level):
             self.set_level(None)

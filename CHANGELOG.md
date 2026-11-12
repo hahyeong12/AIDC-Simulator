@@ -1,6 +1,20 @@
 
 # AIDC Simulator 개발 기록
 
+## v0.9-4a-2 Stage 진행 흐름 · 교육 UX 개선 - 2026-11-12
+
+- 목적: 기능 종류를 늘리지 않고 v0.9-4a-1 심화 연수가 실제 시뮬레이션 상태와 맞게 끊김 없이 진행되도록 수정. 실제 GUI 플레이에서 [Engineering Lab 연습] 진입 직후(D1 09:00·미배정·진행률 0%·네트워크 정상) Stage 1이 존재하지 않는 끊어진 구간을 클릭하라고 요구하던 모순을 해결.
+- `training.py`: `STAGE_INFO`에 한 줄 목표 `cta`와 필요한 실제 상황 `needs`(Stage 1·5=`fault`) 추가. Stage 지도 배지 `BADGES`(통과 완료/진행 중/준비 필요/진행 가능/선택 가능/잠금)와 `TrainingProgress.badge()`, 연습용 `next_open()`. `stage5_verified()`는 조치 전 관측(경로 단절) 기록 **이후**의 응답만 재확인으로 인정(장애 전 ping이 재확인으로 인정되던 판정 구멍 수정).
+- `session.py`: 조회 전용 `training_readiness(stage)`(ready/setup/waiting/restart/finish/act/verify + 칩·제목·설명·주요 행동). `training_select_segment`는 끊어진 구간이 실제로 없으면 기록·저장 없이 준비 안내를 돌려줌. 끝난 사건의 남은 DOWN 표시는 Stage 1 대상이 아님. `training_objective`를 준비 상태 기준으로 재작성(우회 후에도 진행 가능한 Stage 1에 '진행 불가'라고 안내하던 문제 수정). `training_status`에 `readiness`·`structure_ready`·`headline`(현재 목표 카드)·Stage별 `badge`/`badge_text`/`hint`(잠금 해제 조건)·`next_open`.
+- `engineering_lab.py`: [연수 진행] 탭을 현재 목표 카드(상태 칩·큰 제목·짧은 설명·진행률 게이지, 고정) → Stage 지도(고정) → 과제 상세(스크롤) → 하단 고정 주요 행동 버튼 하나로 재배치. 준비가 안 된 Stage는 실습 준비 체크리스트와 [관제실로 돌아가기]. '진행 가능' 상자 클릭 = [다음 Stage 시작]. 구조도: 구간의 모든 그림 요소에 `pick:<구간>` 태그를 달아 ✕·발광선이 클릭을 가로채던 문제 수정, 선택 영역 26px, 마우스 올림 커서·밝은 영역, 선택 결과 표시, 흐름 점은 클릭을 가로채지 않음, 서버·작업 연결선도 안내. Stage 1 통과 전에는 ✕·`DOWN`·결론 문장을 숨기고 선의 색·모양만 표시. 마지막 Stage를 Lab에서 통과하면 [연수 진행] 탭과 결과 화면으로 전환. 헤더 설명 축약.
+- `ui_kit.py`: `PrimaryButton(strong=True)` — 화면에서 지금 눌러야 할 하나의 행동(밝은 청록 배경·어두운 글자·큰 글꼴).
+- `main.py`: 진행 현황에 Stage 배지와 현재 목표 표시.
+- `version.py`: v0.9-4a-2.
+- 테스트: 신규 `tests/test_training_flow.py` 20개(비GUI). `tests/test_training.py`의 연습 조기 복구 테스트는 Stage 5 기준으로 안내를 확인하도록 준비 조작만 조정(Stage 1 진행 가능 검증 추가). `tests/test_training_gui.py`에 연수 흐름 화면 3개, `tests/test_engineering_lab_gui.py`의 ✕ 표시 검증을 정답 선택 뒤로 조정(작성만, 미실행). 비GUI 666개 통과.
+- [네트워크 진단] → Lab 이동(같은 버전): Lab에서 관찰 가능한 장애(`lab_model.diagnosis_lab_target()`, 조회 전용)일 때만 진단 결과창에 [네트워크 구조 자세히 보기]를 둡니다. 누르면 진단창을 먼저 닫고 다음 idle에 Lab [네트워크 구조] 탭을 엽니다(`SimulatorApp.open_lab_network`, 선택 변경·세션 작업 없음). [진단 확인 · 대응 선택]은 닫기만 하며, Lab 모드(Chapter 3a 미리보기 잠금·연수/연습 Stage 권한)는 기존 `lab_mode()` 그대로. 신규 `tests/test_diagnosis_lab.py` 5개(비GUI).
+- 수동 플레이 반영(같은 버전): ① 구조도의 서버 → 고객 작업 선을 네트워크 링크(`link` 태그·빨간 점선·클릭 대상 `job-link`)에서 **작업 배정 논리 관계**(`job-relation`, 항상 같은 가는 점선 화살표·라벨, 고객 작업 상자 점선 테두리)로 분리하고 흐름 점은 서버까지만 그림. 세션은 `job-link`를 네트워크 구간으로 받지 않음. ② `lab_model.job_symptom()`(조회 전용)으로 Stage 4 L3 안내·Stage 5 현재 상황 문구를 실제 작업 상태에서 계산(작업 정상 완료 후 "고객 작업이 멈췄습니다" 안내 수정). Stage 2~4 준비 설명도 우회 중·작업 종료를 반영. ③ `_training_incident_reason()`: 새 사건이 필요할 때 지난 사건의 실제 결말과 Stage 요구 조건, 다음 행동(기존 [연수 사건 다시 받기] 또는 현재 요청 마무리)을 목표 카드·관제실 목표에 표시. 신규 비GUI 6개.
+- 변경 없음: Chapter 1~3b·자유 운영 규칙, 고객 요청·동의, GPU·전력 원장, 네트워크/서버 장애 복구, 점수·기한, 저장 형식(새 필드 없음)·SQL, 가상 터미널 안전 정책.
+
 ## v0.9-4a-1 심화 연수 Stage 1~5 — 성장형 교육 진행 뼈대 - 2026-11-11
 
 - 목적: v0.9-4a의 기능 모음(구조도·객관식·블록·터미널)에 **교육 진행 엔진과 스토리라인**을 연결. Chapter(업무·사건)와 Stage(이해 깊이·해결 방식)를 분리하고, 실제 학습 행동으로만 다음 Stage를 엽니다.

@@ -12,7 +12,7 @@ from story import GUIDES, STEPS, Dialogue, chapter2_failure_pages
 from chapter_dialog import ChapterCompleteDialog, Chapter2CompleteDialog, Chapter3CompleteDialog
 from network_dialog import NetworkDiagnosisDialog, HardwareDiagnosisDialog, Chapter3FeedbackDialog
 from engineering_lab import EngineeringLabDialog, TrainingResultDialog
-from lab_model import lab_support
+from lab_model import diagnosis_lab_target, lab_support
 from story_dialog import StoryDialogueDialog, StoryReviewDialog
 from story_slots import StorySlots
 from tutorial_highlight import TutorialHighlight
@@ -921,10 +921,10 @@ class SimulatorApp:
         if story.training is not None:
             t = story.training
             lines = [f'{"Engineering Lab 연습 (정규 기록 아님)" if t.practice else "심화 연수"} · 진행률 {t.completed_count} / 5']
-            for item in self.session.training_status()['stages']:
-                mark = {'completed': '완료', 'current': '현재', 'open': '선택 가능', 'locked': '잠금'}[item['state']]
-                lines.append(f'{mark}{" · 통과" if item["passed"] and item["state"] != "completed" else ""}: '
-                             f'Stage {item["no"]} {item["short"]}')
+            status = self.session.training_status()
+            for item in status['stages']:
+                lines.append(f'Stage {item["no"]} {item["short"]} — {item["badge_text"]}')
+            lines.append(f'\n현재 목표: {status["headline"]["title"]}')
             if not t.practice:
                 lines.append('\nChapter 1~3b 기초 운영 교육 기록은 그대로 보존됩니다.')
             return TextDialog(self.root, '스토리 진행 현황', '\n'.join(lines))
@@ -1088,7 +1088,7 @@ class SimulatorApp:
         return self._perform(self.session.restart_training_incident)
 
     def lab_changed(self):
-        """Lab의 학습 행동 뒤 관제실 목표·버튼을 다시 계산합니다. 연수를 모두 마치면 결과 화면을 보여 줍니다."""
+        """Lab의 학습 행동 뒤 관제실 목표·버튼을 다시 계산합니다. 연수를 모두 마치면 Lab이 on_result로 결과 화면을 엽니다."""
         if self.closed or self.transitioning:
             return
         self.refresh()
@@ -1288,15 +1288,36 @@ class SimulatorApp:
             return None
         if self.diagnosis_window is not None and self.diagnosis_window.winfo_exists():
             self.diagnosis_window.destroy()
-        self.diagnosis_window = self.build_popup(NetworkDiagnosisDialog, self.root, box[0])
+        # v0.9-4a-2: Lab에서 관찰할 수 있는 장애일 때만 [네트워크 구조 자세히 보기]를 둡니다(미지원 요청에는 버튼 없음).
+        target = diagnosis_lab_target(self.session, rid)
+        on_open_lab = (lambda r=rid: self.open_lab_network(r)) if target else None
+        self.diagnosis_window = self.build_popup(NetworkDiagnosisDialog, self.root, box[0], on_open_lab=on_open_lab)
         return self.diagnosis_window
 
-    def open_engineering_lab(self):
-        """v0.9-4a: 조회·학습 전용 Lab을 엽니다. 여는 것만으로 시간·자원·동의·작업 상태를 바꾸지 않습니다."""
+    def open_lab_network(self, rid):
+        """진단창이 닫힌 뒤 Lab의 [네트워크 구조] 탭을 엽니다. 화면 이동만 하며 세션 작업을 실행하지 않습니다.
+        Lab 모드(미리보기/연수/연습)와 Stage 권한은 기존 open_engineering_lab()·lab_mode() 그대로입니다."""
+        if self.closed or self.transitioning or not self.root.winfo_exists():
+            return None
+        target = diagnosis_lab_target(self.session, rid)          # 닫는 사이 상황이 바뀌었으면 열지 않습니다.
+        if target is None:
+            return None
+        lab = self.open_engineering_lab(rid)                       # 진단한 요청 그대로(선택 변경·저장 없음)
+        if lab is None or not lab.winfo_exists():
+            return None
+        lab.show_tab(target[1])
+        lab.deiconify()
+        lab.lift()
+        lab.focus_set()
+        return lab
+
+    def open_engineering_lab(self, rid=None):
+        """v0.9-4a: 조회·학습 전용 Lab을 엽니다. 여는 것만으로 시간·자원·동의·작업 상태를 바꾸지 않습니다.
+        rid(v0.9-4a-2, 진단창 이동용)를 주면 그 요청을 열고, 심화 연수 중에는 항상 연수 요청을 엽니다."""
         if self.closed or self.transitioning:
             return None
         training = self.session.story.training if self.session.story else None
-        rid = training.rid if training is not None else self.session.selected_id
+        rid = training.rid if training is not None else (self.session.selected_id if rid is None else rid)
         reason = lab_support(self.session, rid)
         if reason:
             messagebox.showinfo('Engineering Lab (Prototype)', reason, parent=self.root)

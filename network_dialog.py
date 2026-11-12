@@ -14,9 +14,10 @@ from window_placement import center_dialog
 
 class NetworkDiagnosisDialog(tk.Toplevel):
     """2열 진단표. 보통 크기에서는 스크롤 없이 보이고, 창이 내용보다 작을 때만 ScrollArea가 스크롤바를 보입니다."""
-    def __init__(self, parent, diagnosis):
+    def __init__(self, parent, diagnosis, on_open_lab=None):
         super().__init__(parent, bg=BG)
         self.withdraw()
+        self.parent, self.on_open_lab = parent, on_open_lab
         self.title('Chapter 3 | 네트워크 진단')
         self.transient(parent)
         self.columnconfigure(0, weight=1)
@@ -60,10 +61,25 @@ class NetworkDiagnosisDialog(tk.Toplevel):
         bottom.grid(row=2, sticky='ew', padx=16, pady=(4, 8))
         bottom.columnconfigure(0, weight=1)
         label(bottom, '현재 진단 정보를 확인했습니다.', 10, MUTED, anchor='w').grid(row=0, column=0, sticky='w')
+        # v0.9-4a-2: Lab에서 관찰할 수 있는 장애일 때만 이동 버튼을 둡니다(호출자가 on_open_lab을 넘김). [확인]은 닫기만 합니다.
+        self.lab_button = None
+        if on_open_lab is not None:
+            self.lab_button = ActionButton(bottom, '네트워크 구조 자세히 보기', self.open_lab, accent=CYAN)
+            self.lab_button.grid(row=0, column=1, sticky='e', padx=(0, 8))
         self.close_button = ActionButton(bottom, '진단 확인 · 대응 선택', self.destroy)
-        self.close_button.grid(row=0, column=1, sticky='e')
+        self.close_button.grid(row=0, column=2, sticky='e')
         self.bind('<Escape>', lambda _: self.destroy())
         center_dialog(self, parent, size=(600, 340), minimum=(460, 260))
+
+    def open_lab(self):
+        """이 창을 먼저 정상 종료한 뒤, 부모의 다음 idle 시점에 Lab을 엽니다(포커스가 닫힌 창에 남지 않게).
+        이동은 화면 전환일 뿐 세션 상태를 바꾸지 않습니다."""
+        callback, parent = self.on_open_lab, self.parent
+        self.on_open_lab = None                       # 두 번 눌러도 한 번만 엽니다.
+        if callback is None:
+            return None
+        self.destroy()
+        return parent.after_idle(callback)
 
 
 class Chapter3FeedbackDialog(tk.Toplevel):

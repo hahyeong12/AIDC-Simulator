@@ -1,4 +1,5 @@
 """v0.9-4a-1 심화 연수(Stage 1~5) 진행 모델. GUI/SQLite와 독립입니다.
+v0.9-4a-2: Stage가 요구하는 실제 상황(`needs`)과 Stage 지도 배지(준비 필요/진행 중/통과 완료/진행 가능/잠금)를 추가했습니다.
 
 Chapter = 고객 업무·장애 사건·운영 미션, Stage = 같은 시스템을 얼마나 깊이 이해하고 어떤 방식으로 해결하는가.
 Stage 통과는 탭 열기·버튼 클릭이 아니라 기록된 학습 행동(구간 선택·명령 실행 결과·답변)과 실제 게임 상태(복구 여부)로만
@@ -26,28 +27,33 @@ SOURCES = {'tool': 'choice', 'assemble': 'blocks', 'terminal': 'terminal', 'inde
 STAGE_INFO = {
     'structure': {
         'no': 1, 'title': '시스템 구조를 관찰하다', 'short': '시스템 구조 관찰', 'tab': '네트워크 구조',
+        'cta': '끊어진 네트워크 구간을 찾으세요.', 'needs': 'fault',  # 현재 목표 한 줄 · 필요한 실제 상황(fault=끊어진 구간 존재)
         'goal': '네트워크 구조도에서 끊어진 구간을 직접 클릭하고, 그 구간이 고객 통신에 주는 영향을 고르세요.',
         'intro': (('mentor', '지금까지는 관제실에서 장애를 처리했죠. 이제 장비가 실제로 어떻게 연결되어 있는지 살펴볼 차례예요.'),
                   ('player', '고객 단말, 라우터, 게이트웨이, 서버… 선으로 이어진 길을 따라가 보면 되겠네요.')),
         'done': '구조를 읽을 줄 알게 됐네요. 끊어진 구간 하나가 고객 작업 전체를 멈출 수 있다는 걸 확인했어요.'},
     'tool': {
         'no': 2, 'title': '진단 도구를 선택하다', 'short': '진단 도구 선택', 'tab': '명령어 학습',
+        'cta': '통신 확인에 맞는 진단 도구를 고르세요.', 'needs': None,  # 현재 목표 한 줄 · 필요한 실제 상황(fault=끊어진 구간 존재)
         'goal': '"서버까지 통신할 수 있는지" 확인할 도구를 고르고, 그 결과만으로 확정할 수 있는 것을 답하세요.',
         'intro': (('mentor', '문제가 어디서 생겼는지 짐작할 수 있게 됐어요. 이번에는 그 판단을 확인할 도구를 배워 봅시다.'),),
         'done': '도구마다 답할 수 있는 질문이 다르다는 걸 알았네요. ping은 응답 여부를 알려 주지만 원인까지 말해 주지는 않아요.'},
     'assemble': {
         'no': 3, 'title': '명령어를 조립하다', 'short': '명령어 조립', 'tab': '명령어 학습',
+        'cta': 'ping 명령을 옵션 · 대상과 함께 조립해 실행하세요.', 'needs': None,  # 현재 목표 한 줄 · 필요한 실제 상황(fault=끊어진 구간 존재)
         'goal': 'ping에 보낼 횟수 옵션(-c)과 서버 주소를 붙여 실제 명령 한 줄을 조립·실행하고, 결과의 응답 수를 확인하세요.',
         'intro': (('mentor', '이제 명령어 이름을 알았어요. 실제로 쓰려면 옵션과 대상도 알아야 해요.'),),
         'done': '명령 · 옵션 · 대상의 순서가 실제 문법이에요. 출력에서 숫자를 읽어 낸 것도 잘했어요.'},
     'terminal': {
         'no': 4, 'title': '직접 명령어를 입력하다', 'short': '터미널 직접 입력', 'tab': '가상 터미널',
+        'cta': '터미널에 직접 입력해 증거를 모으세요.', 'needs': None,  # 현재 목표 한 줄 · 필요한 실제 상황(fault=끊어진 구간 존재)
         'goal': '가상 터미널에 직접 입력해 가까운 네트워크 장비, 원격 서버, 라우팅 정보를 관측하고, 알 수 있는 사실과 아직 확정할 수 없는 사실을 구별하세요.',
         'intro': (('mentor', '이제 제가 명령어를 골라 주지 않아요. 무엇을 확인할지 스스로 생각하고 직접 입력해 보세요.'),
                   ('player', '틀려도 다시 입력하면 되는 거죠? 출력부터 차분히 읽어 볼게요.')),
         'done': '증거를 모으는 것과 결론을 내리는 것은 달라요. 확인된 사실과 추측을 나눈 게 오늘의 핵심이에요.'},
     'independent': {
         'no': 5, 'title': '독립 진단 시연', 'short': '독립 진단', 'tab': '가상 터미널',
+        'cta': '지금까지 배운 방법을 이용해 직접 장애를 해결해 보세요.', 'needs': 'fault',  # 현재 목표 한 줄 · 필요한 실제 상황(fault=끊어진 구간 존재)
         'goal': '장애 증상만 주어집니다. 직접 관측해 원인을 판단하고, 관제실에서 조치한 뒤, 같은 관측으로 정상화를 재확인하세요.',
         'intro': (('mentor', '이제 장애 상황만 알려 드릴게요. 필요한 정보는 직접 확인하고, 대응한 다음 정상화 여부까지 검증해 보세요.'),
                   ('system', '이 Stage는 이미 경험한 경로 단절 사건을 재사용한 독립 진단 흐름의 시연입니다. 처음 보는 장애에 대한 숙련도 인증이 아닙니다.')),
@@ -56,6 +62,9 @@ STAGE_INFO = {
 START_INTRO = (('mentor', '기초 교육을 마쳤네요. 관제실 운영에는 이제 익숙해졌을 거예요.'),
                ('mentor', '오늘부터는 심화 연수예요. 버튼 너머 시스템 내부를 다섯 단계로 깊이 들여다볼 거예요.'),
                ('system', '연수용 고객 요청이 접수됩니다. 배정하고 시간을 진행해 장애가 발생하면 [Engineering Lab]에서 Stage 1을 시작하세요.'))
+# Stage 지도 배지: 색상 외에 기호와 문구로도 상태를 구분합니다.
+BADGES = {'passed': '✔ 통과 완료', 'active': '▶ 진행 중', 'setup': '⚠ 준비 필요', 'next': '▶ 진행 가능',
+          'open': '○ 선택 가능', 'locked': '잠금'}
 RESULT_OUTRO = ('구조 관찰 · 도구 선택 · 명령 조립 · 직접 입력 · 독립 진단까지 같은 사건으로 단계별로 연습했어요. '
                 '다음 전문 과정에서는 원인을 미리 알 수 없는 새 장애와 더 많은 관측 도구를 다룰 예정이에요(아직 미구현).')
 
@@ -206,8 +215,12 @@ class TrainingProgress:
         return bool(remote and others), before
 
     def stage5_verified(self, rid):
-        """조치 뒤(경로가 살아난 상태) 같은 관측 도구로 원격 대상 응답을 다시 확인했는지."""
-        return any(r['ok'] and r['link_ok'] and r['kind'] == 'remote' and r['received'] for r in self.records('independent', rid))
+        """조치 뒤(경로가 살아난 상태) 같은 관측 도구로 원격 대상 응답을 다시 확인했는지.
+        v0.9-4a-2: 장애 전에 받은 응답은 재확인이 아닙니다. 조치 전 관측(경로 단절) 기록 **뒤의** 응답만 인정합니다."""
+        items = self.records('independent', rid)
+        first = next((i for i, r in enumerate(items) if r['ok'] and not r['link_ok'] and r['kind']), None)
+        return first is not None and any(r['ok'] and r['link_ok'] and r['kind'] == 'remote' and r['received']
+                                         for r in items[first+1:])
 
     def terminal_evidence(self):
         kinds = {r['kind'] for r in self.records('terminal') if r['source'] == 'terminal' and r['ok']}
@@ -233,6 +246,22 @@ class TrainingProgress:
         rid = self.rid
         return bool(self.stage5_evidence(rid)[0] and self.answered('independent', 'cause', rid)
                     and state is not None and state.recovered_by and self.stage5_verified(rid))
+
+    def next_open(self):
+        """연습: 현재 Stage 다음으로 아직 체험하지 않은 Stage(없으면 앞쪽에서). 모두 체험했으면 None."""
+        index = STAGES.index(self.current)
+        order = STAGES[index+1:] + STAGES[:index]
+        return next((key for key in order if key not in self.completed), None)
+
+    def badge(self, key, ready):
+        """Stage 지도 배지 키. ready: 현재 Stage가 실제 상황에서 진행 가능한지(세션이 계산)."""
+        if key in self.completed:
+            return 'passed'
+        if key == self.current:
+            return 'active' if ready else 'setup'
+        if self.practice:
+            return 'open'
+        return 'next' if self.can_advance() and key == self.next_stage else 'locked'
 
     def update(self, state):
         """현재 Stage(연습은 모든 Stage)의 통과를 기록합니다. 완료 기록은 줄어들지 않습니다."""

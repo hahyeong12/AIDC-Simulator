@@ -501,6 +501,11 @@ class PracticeTests(unittest.TestCase):
         s.respond('reroute')
         self.assertEqual(s.training_incident(), 'recovered')
         self.assertFalse(s.training_can_restart())              # 같은 고객의 열린 요청은 하나뿐: 작업을 먼저 마칩니다.
+        # v0.9-4a-2: 우회 뒤에도 주 경로는 DOWN이므로 Stage 1은 이 사건으로 계속 진행할 수 있습니다.
+        self.assertTrue(s.training_readiness('structure')['ready'])
+        # 조치 전 증거가 필요한 Stage 5만 새 사건이 필요하고, 그 안내를 보여 줍니다.
+        s.focus_training_stage('independent')
+        self.assertEqual(s.training_readiness()['key'], 'finish')
         self.assertIn('작업 완료', s.training_objective())
         with self.assertRaises(ValueError):
             s.restart_training_incident()
